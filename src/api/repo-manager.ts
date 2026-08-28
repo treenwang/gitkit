@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import { planLayout } from '../domain/layout-planner'
 import { GitExecutor } from '../exec/git-executor'
 import { StoreMutex } from '../exec/store-mutex'
+import { GitHubProvider, type GitHubProviderConfig } from '../forge/github-provider'
+import type { ForgeProvider } from '../forge/types'
 import { GitOpError, type ProgressEvent } from '../types'
 import { RepoStore } from './repo-store'
 
@@ -23,6 +25,10 @@ export type StoreConfig = {
   depth?: number
   /** partial clone filter，默认 'blob:none'；传 false 关闭。 */
   filter?: string | false
+  /** 启用 GitHub PR 功能。token 省略时复用 git 的 token。 */
+  github?: Omit<GitHubProviderConfig, 'url' | 'token'> & { token?: string }
+  /** 直接注入自定义 ForgeProvider；优先于 github。 */
+  forge?: ForgeProvider
 }
 
 export type GcReport = { removed: string[]; skippedActive: string[] }
@@ -90,10 +96,15 @@ export class RepoManager {
           cwd: layout.storeDir,
         })
 
-        const store = new RepoStore({
-          layout, exec: this.#exec, mutex: this.#mutex, token, url: cfg.url,
+        const forge = cfg.forge ?? this.#buildForge(cfg, token)
+        return new RepoStore({
+          layout,
+          exec: this.#exec,
+          mutex: this.#mutex,
+          token,
+          url: cfg.url,
+          ...(forge ? { forge } : {}),
         })
-        return store
       })
       .then(async (store) => {
         await store.pruneOrphans()
@@ -106,6 +117,18 @@ export class RepoManager {
 
     this.#stores.set(layout.key, created)
     return created
+  }
+
+  #buildForge(cfg: StoreConfig, token?: string): ForgeProvider | undefined {
+    if (!cfg.github) return undefined
+    const forgeToken = cfg.github.token ?? token
+    if (!forgeToken) {
+      throw new GitOpError(
+        'INVALID_ARGUMENT',
+        '启用 github 需要 token：请在 github.token 或 auth.token 中提供',
+      )
+    }
+    return new GitHubProvider({ ...cfg.github, url: cfg.url, token: forgeToken })
   }
 
   async evict(url: string): Promise<boolean> {

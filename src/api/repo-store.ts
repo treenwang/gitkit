@@ -163,8 +163,15 @@ export class RepoStore {
       await this.#d.exec.run(['checkout'], {
         cwd: created, token: this.#d.token, phase: 'checkout',
       })
-      await this.#d.exec.run(['config', 'user.name', cfg.author.name], { cwd: created })
-      await this.#d.exec.run(['config', 'user.email', cfg.author.email], { cwd: created })
+      // 必须用 --worktree：不带该选项会写共享的 .git/config，并发创建 session
+      // 时会争抢 config.lock，而且所有 session 会共用同一个 author。
+      // extensions.worktreeConfig 已在 store 创建时开启。
+      await this.#d.exec.run(['config', '--worktree', 'user.name', cfg.author.name], {
+        cwd: created,
+      })
+      await this.#d.exec.run(['config', '--worktree', 'user.email', cfg.author.email], {
+        cwd: created,
+      })
     } catch (e) {
       await this.#removeWorktree(created).catch(() => undefined)
       throw e

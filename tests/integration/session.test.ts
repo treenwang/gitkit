@@ -144,13 +144,47 @@ describe('session 生命周期', () => {
     await a.dispose()
   })
 
-  test('并发创建 10 个 session 全部成功且互不干扰', async () => {
+  test('每个 session 有独立的 author，互不覆盖', async () => {
+    const a = await store.createSession({
+      branch: 'feat/au1', author: { name: 'Alice', email: 'alice@e.com' },
+    })
+    const b = await store.createSession({
+      branch: 'feat/au2', author: { name: 'Bob', email: 'bob@e.com' },
+    })
+    await a.writeFile('x.md', 'a'); await a.commit({ message: 'a' })
+    await b.writeFile('y.md', 'b'); await b.commit({ message: 'b' })
+    expect(git(a.dir, 'log', '-1', '--format=%an <%ae>').trim()).toBe('Alice <alice@e.com>')
+    expect(git(b.dir, 'log', '-1', '--format=%an <%ae>').trim()).toBe('Bob <bob@e.com>')
+
+    // attachSession 也应恢复各自的 author，而不是最后一个写入者
+    const ra = await store.attachSession(a.dir)
+    await ra.writeFile('x2.md', 'a2'); await ra.commit({ message: 'a2' })
+    expect(git(a.dir, 'log', '-1', '--format=%an <%ae>').trim()).toBe('Alice <alice@e.com>')
+    await ra.dispose(); await b.dispose()
+  })
+
+  test('author 写入 worktree 私有配置，不污染共享 .git/config', async () => {
+    const a = await store.createSession({
+      branch: 'feat/cfg', author: { name: 'Alice', email: 'alice@e.com' },
+    })
+    // 键不存在时 git config 以退出码 1 结束 —— 这正是期望的结果
+    let sharedValue = 'PRESENT'
+    try {
+      sharedValue = git(store.storeDir, 'config', '--local', '--get-all', 'user.name').trim()
+    } catch {
+      sharedValue = 'ABSENT'
+    }
+    expect(sharedValue).toBe('ABSENT')
+    await a.dispose()
+  })
+
+  test('并发创建 20 个 session 全部成功且互不干扰', async () => {
     const repos = await Promise.all(
-      Array.from({ length: 10 }, (_, i) =>
+      Array.from({ length: 20 }, (_, i) =>
         store.createSession({ branch: `feat/p${i}`, sparsePaths: ['docs'], author: AUTHOR }),
       ),
     )
-    expect(new Set(repos.map((r) => r.dir)).size).toBe(10)
+    expect(new Set(repos.map((r) => r.dir)).size).toBe(20)
     for (const r of repos) expect(existsSync(join(r.dir, 'docs', 'a.md'))).toBe(true)
     await Promise.all(repos.map((r) => r.dispose()))
     expect(store.activeSessions).toBe(0)
