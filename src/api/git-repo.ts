@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import {
   buildConflictPlan,
@@ -28,8 +29,12 @@ import {
   type SparsePath,
 } from '../types'
 
+export type InProgressOperation = 'merge' | 'rebase' | 'cherry-pick' | null
+
 export type StatusResult = {
   branch: string
+  /** 正在进行中的多步操作；无则为 null。 */
+  operation: InProgressOperation
   staged: string[]
   modified: string[]
   untracked: string[]
@@ -116,10 +121,29 @@ export class GitRepo {
 
   // ------------------------------------------------------------ 状态
 
-  async isMerging(): Promise<boolean> {
-    const p = await this.git(['rev-parse', '--git-path', 'MERGE_HEAD']).catch(() => '')
+  async #gitPathExists(name: string): Promise<boolean> {
+    const p = await this.git(['rev-parse', '--git-path', name]).catch(() => '')
     if (!p) return false
     return existsSync(isAbsolute(p) ? p : join(this.#d.dir, p))
+  }
+
+  /**
+   * 判断是否有进行中的多步操作。
+   *
+   * rebase 冲突**不会**产生 MERGE_HEAD —— 只看 MERGE_HEAD 会把还在冲突中的
+   * worktree 误判为干净，从而被 withSession 直接删掉。必须同时检查
+   * rebase-merge / rebase-apply 目录与 CHERRY_PICK_HEAD。
+   */
+  async operationInProgress(): Promise<InProgressOperation> {
+    if (await this.#gitPathExists('MERGE_HEAD')) return 'merge'
+    if (await this.#gitPathExists('rebase-merge')) return 'rebase'
+    if (await this.#gitPathExists('rebase-apply')) return 'rebase'
+    if (await this.#gitPathExists('CHERRY_PICK_HEAD')) return 'cherry-pick'
+    return null
+  }
+
+  async isMerging(): Promise<boolean> {
+    return (await this.operationInProgress()) !== null
   }
 
   async status(): Promise<StatusResult> {
@@ -147,10 +171,12 @@ export class GitRepo {
       }
     }
 
-    const merging = await this.isMerging()
+    const operation = await this.operationInProgress()
     return {
       branch: this.#d.branch,
-      staged, modified, untracked, conflicted, merging,
+      operation,
+      staged, modified, untracked, conflicted,
+      merging: operation !== null,
       clean:
         staged.length === 0 && modified.length === 0 &&
         untracked.length === 0 && conflicted.length === 0,
@@ -168,8 +194,17 @@ export class GitRepo {
       await this.git(['add', '-A'])
     }
 
+    const operation = await this.operationInProgress()
+    if (operation === 'rebase') {
+      throw new GitOpError(
+        'INVALID_ARGUMENT',
+        'rebase 进行中不能用 commit 收尾（git commit 会留下未完成的 rebase 与游离 HEAD）。' +
+          '解完冲突后请调用 continueRebase()，或 abortMerge() 放弃。',
+      )
+    }
+
     const staged = await this.git(['diff', '--cached', '--name-only'])
-    const merging = await this.isMerging()
+    const merging = operation !== null
     if (!staged && !merging) {
       return { sha: await this.git(['rev-parse', 'HEAD']), changed: false }
     }
@@ -336,20 +371,24 @@ export class GitRepo {
 
     const entries = parseUnmergedIndex(raw)
     const plans = buildConflictPlan(entries, await this.#renameMaps())
+    const swapped = (await this.operationInProgress()) === 'rebase'
 
     const conflicts: Conflict[] = []
     for (const plan of plans) {
-      conflicts.push(await this.#hydrate(plan))
+      conflicts.push(await this.#hydrate(plan, swapped))
     }
     return conflicts
   }
 
   async #renameMaps(): Promise<{ ours: Map<string, string>; theirs: Map<string, string> }> {
-    const mergeBase = await this.git(['merge-base', 'HEAD', 'MERGE_HEAD']).catch(() => '')
+    // rebase 期间是 REBASE_HEAD（正在重放的提交），merge 期间是 MERGE_HEAD
+    const otherRef =
+      (await this.operationInProgress()) === 'rebase' ? 'REBASE_HEAD' : 'MERGE_HEAD'
+    const mergeBase = await this.git(['merge-base', 'HEAD', otherRef]).catch(() => '')
     if (!mergeBase) return { ours: new Map(), theirs: new Map() }
     const [ours, theirs] = await Promise.all([
       this.git(['diff', '--name-status', '-M', mergeBase, 'HEAD']).catch(() => ''),
-      this.git(['diff', '--name-status', '-M', mergeBase, 'MERGE_HEAD']).catch(() => ''),
+      this.git(['diff', '--name-status', '-M', mergeBase, otherRef]).catch(() => ''),
     ])
     return { ours: parseRenameMap(ours), theirs: parseRenameMap(theirs) }
   }
@@ -366,7 +405,7 @@ export class GitRepo {
     }
   }
 
-  async #hydrate(plan: ConflictPlan): Promise<Conflict> {
+  async #hydrate(plan: ConflictPlan, swapped: boolean): Promise<Conflict> {
     const [base, ours, theirs] = await Promise.all([
       this.#blob(plan.base),
       this.#blob(plan.ours),
@@ -374,15 +413,23 @@ export class GitRepo {
     ])
     const binary = base.binary || ours.binary || theirs.binary
 
+    // rebase 期间 git 的 stage 2/3 语义与 merge 相反，这里统一归一化，
+    // 使 `ours` 永远是"你这条分支的改动"
+    const oursSide = swapped ? theirs.side : ours.side
+    const theirsSide = swapped ? ours.side : theirs.side
+    const ourPath = swapped ? plan.theirPath : plan.ourPath
+    const theirPath = swapped ? plan.ourPath : plan.theirPath
+
     const conflict: Conflict = {
       path: plan.path,
-      type: plan.type,
+      type: swapped ? swapType(plan.type) : plan.type,
       binary,
       ...(base.side ? { base: base.side } : {}),
-      ...(ours.side ? { ours: ours.side } : {}),
-      ...(theirs.side ? { theirs: theirs.side } : {}),
-      ...(plan.ourPath ? { ourPath: plan.ourPath } : {}),
-      ...(plan.theirPath ? { theirPath: plan.theirPath } : {}),
+      ...(oursSide ? { ours: oursSide } : {}),
+      ...(theirsSide ? { theirs: theirsSide } : {}),
+      ...(ourPath ? { ourPath } : {}),
+      ...(theirPath ? { theirPath } : {}),
+      ...(swapped ? { sidesSwapped: true } : {}),
     }
 
     // 只有双方都改了同一个文本文件，工作区里才会有 <<<<<<< 标记
@@ -392,7 +439,10 @@ export class GitRepo {
       const text = await this.#fs.readFile(plan.worktreePath).catch(() => undefined)
       if (text !== undefined) {
         conflict.raw = text
-        conflict.hunks = parseConflictHunks(text)
+        const hunks = parseConflictHunks(text)
+        conflict.hunks = swapped
+          ? hunks.map((h) => ({ ...h, ourLines: h.theirLines, theirLines: h.ourLines }))
+          : hunks
       }
     }
     return conflict
@@ -484,12 +534,87 @@ export class GitRepo {
         `冲突 ${path} 没有可逐块解决的文本标记（type=${conflict.type}, binary=${conflict.binary}）`,
       )
     }
-    return this.resolveConflicts([{ path, content: buildResolvedContent(conflict.raw, choices) }])
+    // raw 中的标记仍是 git 的原始顺序；归一化过的 choices 要换回去再套用
+    const effective = conflict.sidesSwapped ? choices.map(swapChoice) : choices
+    return this.resolveConflicts([
+      { path, content: buildResolvedContent(conflict.raw, effective) },
+    ])
   }
 
+  /** 继续被冲突中断的 rebase。解完冲突并 add 之后调用。 */
+  async continueRebase(): Promise<{ done: boolean; conflicted: boolean }> {
+    this.assertLive()
+    if ((await this.operationInProgress()) !== 'rebase') {
+      throw new GitOpError('INVALID_ARGUMENT', '当前没有进行中的 rebase')
+    }
+    try {
+      await this.git(['-c', 'core.editor=true', 'rebase', '--continue'])
+    } catch (e) {
+      if (await this.git(['ls-files', '-u']).catch(() => '')) {
+        return { done: false, conflicted: true }
+      }
+      throw e
+    }
+    return { done: (await this.operationInProgress()) === null, conflicted: false }
+  }
+
+  /** 放弃进行中的操作（merge / rebase / cherry-pick），回到干净状态。 */
   async abortMerge(): Promise<void> {
     this.assertLive()
-    await this.git(['merge', '--abort'])
+    const op = await this.operationInProgress()
+    if (op === null) {
+      throw new GitOpError('INVALID_ARGUMENT', '当前没有进行中的 merge / rebase / cherry-pick')
+    }
+    const cmd = op === 'rebase' ? 'rebase' : op === 'cherry-pick' ? 'cherry-pick' : 'merge'
+    await this.git([cmd, '--abort'])
+  }
+
+  /**
+   * 显式合并任意 ref（不含 fetch）。需要先取到远端改动请用 pull 或 store.fetch。
+   */
+  async merge(
+    ref: string,
+    opts: { noFastForward?: boolean } = {},
+  ): Promise<{ conflicted: boolean }> {
+    this.assertLive()
+    const args = ['merge', '--no-edit']
+    if (opts.noFastForward) args.push('--no-ff')
+    args.push(ref)
+    try {
+      await this.git(args)
+      return { conflicted: false }
+    } catch (e) {
+      if (await this.git(['ls-files', '-u']).catch(() => '')) return { conflicted: true }
+      throw e
+    }
+  }
+
+  /**
+   * 检查并清理中断遗留的状态。**不会自动执行**，必须由宿主显式调用 ——
+   * 自动 abort 可能丢掉别人已解了一半的冲突。
+   */
+  async recover(
+    opts: { abortOperation?: boolean; clearIndexLock?: boolean } = {},
+  ): Promise<{ operation: InProgressOperation; aborted: boolean; indexLockCleared: boolean }> {
+    this.assertLive()
+    const operation = await this.operationInProgress()
+
+    let indexLockCleared = false
+    if (opts.clearIndexLock) {
+      const p = await this.git(['rev-parse', '--git-path', 'index.lock']).catch(() => '')
+      const abs = p ? (isAbsolute(p) ? p : join(this.#d.dir, p)) : ''
+      if (abs && existsSync(abs)) {
+        await rm(abs, { force: true })
+        indexLockCleared = true
+      }
+    }
+
+    let aborted = false
+    if (opts.abortOperation && operation !== null) {
+      await this.abortMerge()
+      aborted = true
+    }
+    return { operation, aborted, indexLockCleared }
   }
 
   /**
@@ -501,4 +626,17 @@ export class GitRepo {
     this.#disposed = true
     await this.#d.onDispose(opts.keepWorktree ?? false)
   }
+}
+
+/** rebase 归一化：deleted_by_them 与 deleted_by_us 互换。 */
+function swapType(t: Conflict['type']): Conflict['type'] {
+  if (t === 'deleted_by_them') return 'deleted_by_us'
+  if (t === 'deleted_by_us') return 'deleted_by_them'
+  return t
+}
+
+function swapChoice(c: HunkChoice): HunkChoice {
+  if (c === 'ours') return 'theirs'
+  if (c === 'theirs') return 'ours'
+  return c
 }

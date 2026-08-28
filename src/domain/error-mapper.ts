@@ -8,6 +8,7 @@ const RULES: Array<[RegExp, GitErrorCode]> = [
   [/authentication failed|invalid username or password|could not read username|returned error: 40[13]/i, 'AUTH_FAILED'],
   [/could not resolve host|failed to connect|connection timed out|connection refused|network is unreachable|ssl certificate problem/i, 'NETWORK'],
   [/not a git repository/i, 'NOT_A_REPO'],
+  [/not something we can merge|couldn't find remote ref|unknown revision or path not in the working tree/i, 'BRANCH_NOT_FOUND'],
   [/is already checked out at|is already used by worktree/i, 'BRANCH_IN_USE'],
   [/a branch named .* already exists|already exists$/im, 'BRANCH_EXISTS'],
   [/you have not concluded your merge|merge_head exists|you are in the middle of a merge/i, 'MERGE_IN_PROGRESS'],

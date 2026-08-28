@@ -12,6 +12,8 @@ describe('mapGitError', () => {
     ['merge 进行中', 'fatal: You have not concluded your merge (MERGE_HEAD exists).', 'MERGE_IN_PROGRESS'],
     ['分支已被占用', "fatal: 'feat/x' is already checked out at '/data/wt/a'", 'BRANCH_IN_USE'],
     ['分支已存在', "fatal: a branch named 'feat/x' already exists", 'BRANCH_EXISTS'],
+    ['ref 不存在', "merge: origin/nope - not something we can merge", 'BRANCH_NOT_FOUND'],
+    ['远端 ref 找不到', "fatal: couldn't find remote ref refs/heads/nope", 'BRANCH_NOT_FOUND'],
   ]
 
   for (const [name, stderr, expected] of cases) {

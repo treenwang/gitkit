@@ -4,7 +4,9 @@ export type { ManagerConfig, StoreConfig, GcReport } from './api/repo-manager'
 export { RepoStore } from './api/repo-store'
 export type { SessionConfig, SessionInfo } from './api/repo-store'
 export { GitRepo } from './api/git-repo'
-export type { StatusResult, LogEntry, PushBranchResult } from './api/git-repo'
+export type {
+  StatusResult, LogEntry, PushBranchResult, InProgressOperation,
+} from './api/git-repo'
 export { GitHubProvider, parseRepoSlug } from './forge/github-provider'
 export type { GitHubProviderConfig, OctokitLike, RepoSlug } from './forge/github-provider'
 export type { ForgeProvider, CreatePRInput, ListPRQuery } from './forge/types'

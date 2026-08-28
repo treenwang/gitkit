@@ -77,6 +77,13 @@ export type Conflict = {
   hunks?: ConflictHunk[]
   /** 工作区中带冲突标记的原始内容；仅文本且存在标记时填充。 */
   raw?: string
+  /**
+   * rebase 期间 git 的 stage 2/3 与 merge 相反（stage 2 是被 rebase 到的上游，
+   * stage 3 才是你正在重放的提交）。本包统一归一化，使 `ours` 永远表示
+   * **你这条分支的改动**；发生过交换时该字段为 true，`raw` 中的标记仍是
+   * git 的原始顺序（未交换）。
+   */
+  sidesSwapped?: boolean
 }
 
 export type Resolution =
