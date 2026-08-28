@@ -1,19 +1,36 @@
 {
   "name": "@aaxis/git-operation",
   "version": "0.0.0",
+  "description": "Embeddable server-side git operations with sparse checkout, worktree-isolated concurrency, structured conflict resolution, and optional GitHub PR integration.",
+  "license": "UNLICENSED",
+  "private": false,
+  "keywords": [
+    "git",
+    "sparse-checkout",
+    "worktree",
+    "partial-clone",
+    "merge-conflict",
+    "github",
+    "pull-request"
+  ],
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "devDependencies": {
     "@types/bun": "^1.4.0",
     "@types/node": "^26.4.0",
     "tsup": "^8.5.1",
-    "typescript": "^7.0.2"
+    "typescript": "5.9.3"
   },
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     }
   },
   "engines": {
@@ -23,7 +40,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup && tsc -p tsconfig.build.json",
+    "build": "tsup",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
@@ -36,5 +53,6 @@
     "@octokit/rest": {
       "optional": true
     }
-  }
+  },
+  "sideEffects": false
 }

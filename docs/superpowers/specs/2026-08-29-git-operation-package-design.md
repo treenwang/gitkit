@@ -625,7 +625,7 @@ Node 18 / 20 / 22 × git **2.32（声明下限）/ 2.37 / 最新**。
 | 项 | 设计 | 实际 | 原因 |
 | --- | --- | --- | --- |
 | git 进程层 | simple-git | `node:child_process.execFile` | simple-git 的 `timeout` 是**无输出超时**而非总时长超时，无法实现 §5.1 要求的单条命令总超时；且在 `GitExecutor` 这套设计下参数传递、并发队列、进度解析、错误映射全部自理，simple-git 只会被当作 `.raw()` 透传使用，价值接近于零。 |
-| 类型声明产物 | tsup `dts: true` | `tsc -p tsconfig.build.json` | tsup 的 rollup-plugin-dts 在 TypeScript 5.9 下崩溃（`useCaseSensitiveFileNames`）。ESM/CJS 仍由 tsup 产出。 |
+| TypeScript 版本 | 5.x | **锁定 `^5.9.3`** | 依赖解析一度把 `typescript` 升到 7.0.2，导致 tsup 的 rollup-plugin-dts 崩溃（`useCaseSensitiveFileNames`）。回到 5.9.3 后 `dts: true` 正常，并能同时产出 CJS 需要的 `.d.cts`，因此**未**偏离原设计的打包方案。消费者绝大多数在 TS 5.x，不应让本包的 devDependency 漂到刚发布的大版本。 |
 
 ### A.2 实现中发现的缺陷（设计未覆盖）
 
@@ -705,6 +705,7 @@ Node 18 / 20 / 22 × git **2.32（声明下限）/ 2.37 / 最新**。
 
 ### A.6 验证状态
 
+- 产物为 ESM + CJS + `.d.ts` / `.d.cts`，并已用独立的消费方工程验证类型可用、`PushResult` 判别联合可正确收窄。
 - **295 个测试全部通过**（`bun test`），其中集成测试用本地 bare 仓库，不联网。
   包含 20 个 session 的并发压力测试、五类冲突的真 git 覆盖、二进制字节一致性、
   以及"创建 sparse worktree 期间不发生全量 blob 拉取"的对象计数断言。
