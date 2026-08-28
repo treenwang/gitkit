@@ -79,9 +79,22 @@ export function pushToRemote(
     writeFileSync(abs, content)
   }
   git(clone, 'add', '-A')
-  git(clone, 'commit', '-m', opts.message ?? 'external change')
+  git(clone, 'commit', '--allow-empty', '-m', opts.message ?? 'external change')
   git(clone, 'push', 'origin', branch)
   rmSync(clone, { recursive: true, force: true })
 }
 
 export const urlOf = (p: string): string => `file://${p}`
+
+/**
+ * 在 remote 的 main 上造出全部五类冲突所需的前置内容并推送。
+ * 返回后，调用方在自己的分支上做对应改动，pull origin/main 即可复现。
+ */
+export function seedConflictBase(root: string, bare: string): void {
+  pushToRemote(root, bare, {
+    'docs/both.txt': 'l1\nl2\nl3\nl4\nl5\n',
+    'docs/delmod.txt': 'del\n',
+    'docs/moddel.txt': 'mod\n',
+    'docs/orig.txt': 'rename me\n',
+  }, { message: 'conflict base' })
+}

@@ -1,9 +1,32 @@
 import { existsSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
+import {
+  buildConflictPlan,
+  looksBinary,
+  parseConflictHunks,
+  parseRenameMap,
+  parseUnmergedIndex,
+  type ConflictPlan,
+} from '../domain/conflict-parser'
+import { buildResolvedContent } from '../domain/conflict-writer'
 import { resolveWithin } from '../domain/path-guard'
+import {
+  decideRetry, deriveMergeMode, needsDerivation, resolveMergeMode,
+} from '../domain/push-policy'
+import type { CreatePRInput, ForgeProvider } from '../forge/types'
 import type { ExecOptions, GitExecutor } from '../exec/git-executor'
 import { FsGateway } from '../exec/fs-gateway'
-import { GitOpError, type SparsePath } from '../types'
+import {
+  GitOpError,
+  type Conflict,
+  type ConflictSide,
+  type HunkChoice,
+  type MergeMethod,
+  type MergeMode,
+  type PushResult,
+  type Resolution,
+  type SparsePath,
+} from '../types'
 
 export type StatusResult = {
   branch: string
@@ -29,7 +52,16 @@ export type GitRepoDeps = {
   exec: GitExecutor
   token?: string
   fetch: () => Promise<void>
-  onDispose: () => Promise<void>
+  onDispose: (keepWorktree: boolean) => Promise<void>
+  forge?: ForgeProvider
+  retryOnReject?: boolean
+}
+
+export type PushOptions = {
+  createPR?: CreatePRInput | false
+  merge?: MergeMode
+  method?: MergeMethod
+  retryOnReject?: boolean
 }
 
 /** 绑定到单个 worktree 的操作门面。永不加锁 —— store 级操作请走 RepoStore。 */
@@ -192,6 +224,72 @@ export class GitRepo {
     }
   }
 
+  /**
+   * 完整的 push 流程：推分支 →（被拒则 pull 一次再推）→ 建 PR → 按模式合并。
+   *
+   * 预期结局一律用返回值表达，不抛错：push 被拒、有冲突、PR 被保护规则挡住
+   * 都是常规路径。只有真异常（认证失败之外的 git 崩溃、参数非法）才抛。
+   */
+  async push(opts: PushOptions = {}): Promise<PushResult> {
+    this.assertLive()
+    const retryOnReject = opts.retryOnReject ?? this.#d.retryOnReject ?? true
+
+    let attempt = 0
+    for (;;) {
+      const pushed = await this.pushBranch()
+      if (pushed.ok) break
+
+      if (pushed.reason !== 'rejected') {
+        return { ok: false, pushed: false, reason: pushed.reason, detail: pushed.detail }
+      }
+      if (decideRetry({ retryOnReject, attempt }) === 'give_up') {
+        return { ok: false, pushed: false, reason: 'rejected', detail: pushed.detail }
+      }
+
+      attempt += 1
+      const pulled = await this.pull()
+      if (pulled.conflicted) {
+        // 停在 merge 中，把冲突现场交给宿主处理
+        return {
+          ok: false,
+          pushed: false,
+          reason: 'conflict',
+          conflicts: await this.getConflicts(),
+          worktreeDir: this.#d.dir,
+        }
+      }
+    }
+
+    if (!opts.createPR) return { ok: true, pushed: true }
+
+    const forge = this.#d.forge
+    if (!forge) {
+      throw new GitOpError(
+        'FORGE_NOT_INSTALLED',
+        '要创建 PR 需要在 RepoManager/RepoStore 上配置 forge（GitHubProvider）',
+      )
+    }
+
+    const input = { ...opts.createPR, head: opts.createPR.head ?? this.#d.branch }
+    const pr = await forge.createPR(input)
+
+    // 只有 'auto'（或省略）才需要这次 diff；显式指定模式时省掉一次 git 调用
+    const derived = needsDerivation(opts.merge)
+      ? deriveMergeMode(await this.diffSummary({ against: input.base }), this.#d.sparse)
+      : 'checksPass'
+    const mode = resolveMergeMode(opts.merge, derived)
+    if (mode === false) return { ok: true, pushed: true, pr }
+
+    const method = opts.method ?? 'squash'
+    const autoMerge =
+      mode === 'now'
+        ? await forge.mergePR(pr.number, method)
+        : await forge.enableAutoMerge(pr.number, method)
+
+    // PR 已创建这一事实不受 auto-merge 结果影响
+    return { ok: true, pushed: true, pr, autoMerge }
+  }
+
   async log(opts: { limit?: number } = {}): Promise<LogEntry[]> {
     const out = await this.git([
       'log', `-${opts.limit ?? 20}`, '--format=%H%x1f%an%x1f%aI%x1f%s',
@@ -223,14 +321,184 @@ export class GitRepo {
     this.#fs = new FsGateway(this.#d.dir, this.#d.sparse)
   }
 
+  // ------------------------------------------------------------ 冲突
+
+  /**
+   * 返回结构化的冲突列表。
+   *
+   * 三方内容一律用 `cat-file blob <oid>` 按 stage 取 —— 工作区里的文件是
+   * 带标记的混合体，既不是 ours 也不是 theirs。
+   */
+  async getConflicts(): Promise<Conflict[]> {
+    this.assertLive()
+    const raw = await this.git(['ls-files', '-u'])
+    if (!raw) return []
+
+    const entries = parseUnmergedIndex(raw)
+    const plans = buildConflictPlan(entries, await this.#renameMaps())
+
+    const conflicts: Conflict[] = []
+    for (const plan of plans) {
+      conflicts.push(await this.#hydrate(plan))
+    }
+    return conflicts
+  }
+
+  async #renameMaps(): Promise<{ ours: Map<string, string>; theirs: Map<string, string> }> {
+    const mergeBase = await this.git(['merge-base', 'HEAD', 'MERGE_HEAD']).catch(() => '')
+    if (!mergeBase) return { ours: new Map(), theirs: new Map() }
+    const [ours, theirs] = await Promise.all([
+      this.git(['diff', '--name-status', '-M', mergeBase, 'HEAD']).catch(() => ''),
+      this.git(['diff', '--name-status', '-M', mergeBase, 'MERGE_HEAD']).catch(() => ''),
+    ])
+    return { ours: parseRenameMap(ours), theirs: parseRenameMap(theirs) }
+  }
+
+  async #blob(side: ConflictSide | undefined): Promise<{ side?: ConflictSide; binary: boolean }> {
+    if (!side) return { binary: false }
+    const buf = await this.#d.exec.runBuffer(['cat-file', 'blob', side.oid], {
+      cwd: this.#d.dir,
+    })
+    const binary = looksBinary(buf)
+    return {
+      side: binary ? { ...side } : { ...side, content: buf.toString('utf8') },
+      binary,
+    }
+  }
+
+  async #hydrate(plan: ConflictPlan): Promise<Conflict> {
+    const [base, ours, theirs] = await Promise.all([
+      this.#blob(plan.base),
+      this.#blob(plan.ours),
+      this.#blob(plan.theirs),
+    ])
+    const binary = base.binary || ours.binary || theirs.binary
+
+    const conflict: Conflict = {
+      path: plan.path,
+      type: plan.type,
+      binary,
+      ...(base.side ? { base: base.side } : {}),
+      ...(ours.side ? { ours: ours.side } : {}),
+      ...(theirs.side ? { theirs: theirs.side } : {}),
+      ...(plan.ourPath ? { ourPath: plan.ourPath } : {}),
+      ...(plan.theirPath ? { theirPath: plan.theirPath } : {}),
+    }
+
+    // 只有双方都改了同一个文本文件，工作区里才会有 <<<<<<< 标记
+    const hasMarkers =
+      !binary && (plan.type === 'both_modified' || plan.type === 'both_added')
+    if (hasMarkers && plan.worktreePath) {
+      const text = await this.#fs.readFile(plan.worktreePath).catch(() => undefined)
+      if (text !== undefined) {
+        conflict.raw = text
+        conflict.hunks = parseConflictHunks(text)
+      }
+    }
+    return conflict
+  }
+
+  /** 写回解决结果并 `git add`；返回仍未解决的冲突路径。 */
+  async resolveConflicts(resolutions: readonly Resolution[]): Promise<{ remaining: string[] }> {
+    this.assertLive()
+    const conflicts = await this.getConflicts()
+    const known = new Map(conflicts.map((c) => [c.path, c]))
+
+    for (const r of resolutions) {
+      const conflict = known.get(r.path)
+      if (!conflict) {
+        throw new GitOpError(
+          'INVALID_ARGUMENT',
+          `路径不在当前冲突集合中: ${r.path}（当前冲突: ${[...known.keys()].join(', ') || '无'}）`,
+        )
+      }
+      await this.#applyResolution(conflict, r)
+    }
+
+    const remaining = await this.git(['diff', '--name-only', '--diff-filter=U'])
+    return { remaining: remaining ? remaining.split('\n').filter(Boolean) : [] }
+  }
+
+  async #applyResolution(conflict: Conflict, r: Resolution): Promise<void> {
+    const allPaths = [...new Set(
+      [conflict.path, conflict.ourPath, conflict.theirPath].filter(Boolean) as string[],
+    )]
+    // 非 rename 冲突只有一个路径；rename 冲突可能同时涉及旧路径与双方新路径
+    const primary = conflict.ourPath ?? conflict.theirPath ?? conflict.path
+
+    if ('content' in r) {
+      await this.#fs.writeFile(primary, r.content)
+      await this.#dropOtherPaths(allPaths, primary)
+      await this.git(['add', '--', primary])
+      return
+    }
+
+    if (r.take === 'delete') {
+      await this.git(['rm', '-f', '--ignore-unmatch', '--', ...allPaths])
+      return
+    }
+
+    const side =
+      r.take === 'base' ? conflict.base
+      : r.take === 'ours' ? conflict.ours
+      : conflict.theirs
+    if (!side) {
+      throw new GitOpError(
+        'INVALID_ARGUMENT',
+        `冲突 ${conflict.path} 没有 ${r.take} 侧（type=${conflict.type}）；` +
+          `若要删除该文件请用 take: 'delete'`,
+      )
+    }
+
+    const target =
+      r.take === 'ours' ? (conflict.ourPath ?? conflict.path)
+      : r.take === 'theirs' ? (conflict.theirPath ?? conflict.path)
+      : conflict.path
+
+    // 统一走 blob → Buffer → 落盘，二进制安全，且不依赖工作区当前内容
+    const buf = await this.#d.exec.runBuffer(['cat-file', 'blob', side.oid], {
+      cwd: this.#d.dir,
+    })
+    await this.#fs.writeBuffer(target, buf)
+    await this.#dropOtherPaths(allPaths, target)
+    await this.git(['add', '--', target])
+  }
+
+  /** rename 冲突下，选定一侧后要把其余路径从索引与工作区移除。 */
+  async #dropOtherPaths(allPaths: readonly string[], keep: string): Promise<void> {
+    const others = allPaths.filter((p) => p !== keep)
+    if (others.length === 0) return
+    await this.git(['rm', '-f', '--ignore-unmatch', '--', ...others])
+  }
+
+  /** 逐 hunk 选边的便利方法。choices 长度必须等于 hunks 数量。 */
+  async resolveByHunks(path: string, choices: readonly HunkChoice[]): Promise<{ remaining: string[] }> {
+    this.assertLive()
+    const conflict = (await this.getConflicts()).find((c) => c.path === path)
+    if (!conflict) {
+      throw new GitOpError('INVALID_ARGUMENT', `路径不在当前冲突集合中: ${path}`)
+    }
+    if (conflict.raw === undefined) {
+      throw new GitOpError(
+        'INVALID_ARGUMENT',
+        `冲突 ${path} 没有可逐块解决的文本标记（type=${conflict.type}, binary=${conflict.binary}）`,
+      )
+    }
+    return this.resolveConflicts([{ path, content: buildResolvedContent(conflict.raw, choices) }])
+  }
+
   async abortMerge(): Promise<void> {
     this.assertLive()
     await this.git(['merge', '--abort'])
   }
 
-  async dispose(): Promise<void> {
+  /**
+   * 释放 session。默认删除 worktree；`keepWorktree: true` 只解除持有关系
+   * 而保留磁盘上的 worktree（用于把冲突现场留给宿主后续 attachSession 接管）。
+   */
+  async dispose(opts: { keepWorktree?: boolean } = {}): Promise<void> {
     if (this.#disposed) return
     this.#disposed = true
-    await this.#d.onDispose()
+    await this.#d.onDispose(opts.keepWorktree ?? false)
   }
 }

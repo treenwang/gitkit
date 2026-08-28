@@ -7,8 +7,9 @@ import { worktreeDirFor } from '../domain/layout-planner'
 import { normalizeSparsePaths } from '../domain/sparse-manager'
 import type { GitExecutor } from '../exec/git-executor'
 import type { StoreMutex } from '../exec/store-mutex'
-import { GitOpError, type SparsePath, type SparsePathInput } from '../types'
-import { GitRepo } from './git-repo'
+import type { ForgeProvider } from '../forge/types'
+import { GitOpError, type PushResult, type SparsePath, type SparsePathInput } from '../types'
+import { GitRepo, type PushOptions } from './git-repo'
 
 export type SessionConfig = {
   branch: string
@@ -31,7 +32,14 @@ export type RepoStoreDeps = {
   mutex: StoreMutex
   token?: string
   url: string
+  forge?: ForgeProvider
 }
+
+export type PublishConfig = SessionConfig & {
+  message: string
+  /** 省略则使用 worktree 中当前的改动。 */
+  files?: { path: string; content: string }[]
+} & PushOptions
 
 /** 一个 URL 对应的共享对象库。负责 store 级状态（refs、worktree 注册表）。 */
 export class RepoStore {
@@ -165,6 +173,88 @@ export class RepoStore {
     return this.#wrap(created, cfg.branch, sparse, cfg.author)
   }
 
+  /**
+   * 在一个自动释放的 session 中执行回调。
+   *
+   * 退出契约：回调正常返回或抛错都会 remove worktree；**但如果退出时
+   * worktree 仍处于 merge 中，则保留 worktree 并抛 MERGE_IN_PROGRESS**
+   * （detail 带路径）。静默删除会丢掉冲突现场和宿主已解了一半的工作，
+   * 静默保留又会让宿主以为已清理干净 —— 报错是唯一诚实的选择。
+   *
+   * 因此程序化解冲突应当发生在回调内部；需要让冲突现场跨越调用边界存活时，
+   * 改用 createSession + 手动 dispose，或事后 attachSession 接管。
+   */
+  async withSession<T>(cfg: SessionConfig, fn: (repo: GitRepo) => Promise<T>): Promise<T> {
+    const repo = await this.createSession(cfg)
+    let result: T
+    try {
+      result = await fn(repo)
+    } catch (e) {
+      await this.#disposeUnlessMerging(repo, e)
+      throw e
+    }
+    await this.#disposeUnlessMerging(repo)
+    return result
+  }
+
+  async #disposeUnlessMerging(repo: GitRepo, pending?: unknown): Promise<void> {
+    let merging = false
+    try {
+      const st = await repo.status()
+      merging = st.merging || st.conflicted.length > 0
+    } catch {
+      merging = false
+    }
+    if (!merging) {
+      await repo.dispose().catch(() => undefined)
+      return
+    }
+    // 保留 worktree，但解除持有关系，否则 store 的引用计数永远降不回来
+    await repo.dispose({ keepWorktree: true }).catch(() => undefined)
+    // 回调本身已经抛错时不再覆盖原始错误
+    if (pending) return
+    throw new GitOpError(
+      'MERGE_IN_PROGRESS',
+      `session 退出时仍处于 merge 中，worktree 已保留: ${repo.dir}。` +
+        `请用 store.attachSession('${repo.dir}') 接管，或 abortMerge() 后 dispose()。`,
+      { detail: repo.dir },
+    )
+  }
+
+  /**
+   * 一站式：开 session → 写文件 → commit → push（可建 PR）→ 释放。
+   *
+   * 与 withSession 的区别：push 产生冲突时**不抛错**，而是原样返回
+   * `reason: 'conflict'` 的结果并**保留 worktree**（路径在结果的
+   * worktreeDir 中），因为冲突是 PushResult 的一等公民而非异常。
+   * 其余情况一律释放 worktree。
+   */
+  async publish(cfg: PublishConfig): Promise<PushResult> {
+    const { message, files, createPR, merge, method, retryOnReject, ...sessionCfg } = cfg
+    const repo = await this.createSession(sessionCfg)
+    let result: PushResult
+    try {
+      for (const f of files ?? []) await repo.writeFile(f.path, f.content)
+      await repo.commit({ message })
+      result = await repo.push({
+        ...(createPR !== undefined ? { createPR } : {}),
+        ...(merge !== undefined ? { merge } : {}),
+        ...(method !== undefined ? { method } : {}),
+        ...(retryOnReject !== undefined ? { retryOnReject } : {}),
+      })
+    } catch (e) {
+      await repo.dispose().catch(() => undefined)
+      throw e
+    }
+    if (!result.ok && result.reason === 'conflict') {
+      // 保留 worktree（冲突现场），但释放持有关系
+      await repo.dispose({ keepWorktree: true }).catch(() => undefined)
+      return result
+    }
+    await repo.dispose().catch(() => undefined)
+    return result
+  }
+
   /** 重新接管一个已存在的 worktree（例如进程重启后恢复冲突现场）。 */
   async attachSession(worktreeDir: string): Promise<GitRepo> {
     if (!existsSync(worktreeDir)) {
@@ -231,12 +321,13 @@ export class RepoStore {
       author,
       exec: this.#d.exec,
       token: this.#d.token,
+      ...(this.#d.forge ? { forge: this.#d.forge } : {}),
       fetch: () => this.fetch(),
-      onDispose: async () => {
+      onDispose: async (keepWorktree: boolean) => {
         if (released) return
         released = true
         try {
-          await this.#removeWorktree(dir)
+          if (!keepWorktree) await this.#removeWorktree(dir)
         } finally {
           this.#release()
         }

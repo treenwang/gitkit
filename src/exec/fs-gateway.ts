@@ -48,6 +48,13 @@ export class FsGateway {
     await writeFile(abs, content, 'utf8')
   }
 
+  /** 二进制安全的写入 —— 解冲突时按 blob 原样落盘。 */
+  async writeBuffer(rel: string, content: Buffer): Promise<void> {
+    const abs = await this.#safeAbs(rel, false)
+    await mkdir(dirname(abs), { recursive: true })
+    await writeFile(abs, content)
+  }
+
   async exists(rel: string): Promise<boolean> {
     try {
       await lstat(await this.#safeAbs(rel, true))

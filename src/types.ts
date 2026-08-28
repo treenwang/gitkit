@@ -75,6 +75,8 @@ export type Conflict = {
   ourPath?: string
   theirPath?: string
   hunks?: ConflictHunk[]
+  /** 工作区中带冲突标记的原始内容；仅文本且存在标记时填充。 */
+  raw?: string
 }
 
 export type Resolution =
@@ -109,7 +111,14 @@ export type AutoMergeOutcome =
 
 export type PushResult =
   | { ok: true; pushed: true; pr?: PullRequest; autoMerge?: AutoMergeOutcome }
-  | { ok: false; pushed: false; reason: 'conflict'; conflicts: Conflict[] }
+  | {
+      ok: false
+      pushed: false
+      reason: 'conflict'
+      conflicts: Conflict[]
+      /** 停在 merge 中的 worktree；用 store.attachSession(dir) 接管。 */
+      worktreeDir: string
+    }
   | {
       ok: false
       pushed: false

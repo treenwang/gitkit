@@ -126,6 +126,48 @@ export class GitExecutor {
     })
   }
 
+  /** 以 Buffer 返回 stdout —— 用于可能是二进制的 blob 内容。 */
+  async runBuffer(args: readonly string[], opts: ExecOptions = {}): Promise<Buffer> {
+    const full = this.buildArgs(args, opts)
+    const secrets = opts.token ? [opts.token] : []
+    const printable = redact([this.#gitPath, ...full].join(' '), secrets)
+
+    return new Promise<Buffer>((resolve, reject) => {
+      execFile(
+        this.#gitPath,
+        full,
+        {
+          cwd: opts.cwd,
+          timeout: opts.timeout ?? this.#timeout,
+          maxBuffer: 64 * 1024 * 1024,
+          encoding: 'buffer',
+          env: { ...process.env, GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' },
+        },
+        (error, stdout, stderr) => {
+          if (!error) {
+            resolve(Buffer.from(stdout))
+            return
+          }
+          const safeErr = redact(Buffer.from(stderr ?? '').toString('utf8'), secrets)
+          const err = error as NodeJS.ErrnoException & { killed?: boolean }
+          const code =
+            err.code === 'ENOENT'
+              ? 'GIT_NOT_FOUND'
+              : err.killed
+                ? 'TIMEOUT'
+                : mapGitError(safeErr)
+          reject(
+            new GitOpError(code, redact(firstLine(safeErr) || error.message, secrets), {
+              detail: safeErr,
+              command: printable,
+              cause: error,
+            }),
+          )
+        },
+      )
+    })
+  }
+
   async version(): Promise<GitVersion> {
     const raw = await this.run(['--version'])
     const m = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(raw)
