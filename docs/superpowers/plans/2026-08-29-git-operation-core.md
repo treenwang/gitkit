@@ -1,5 +1,11 @@
 # @aaxis/git-operation — 计划 1/3：核心（sparse worktree 与基础 git 操作）
 
+> **状态：已被实现取代（2026-08-29）。**
+> 本计划已全部实现，且实现过程中发现了若干本计划未覆盖的缺陷（rebase 状态、
+> 共享 config 竞态、rebase 的 ours/theirs 反转等）。**代码与 spec 的附录 A 才是
+> 当前事实**，本文保留仅供追溯当初的任务拆分。计划 2/3（冲突层、GitHub 层）未
+> 单独成文，其范围已直接实现并测试。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 交付一个可用的包骨架：能对一个 GitHub 仓库做 partial + sparse clone，为每个并发任务开一个独立 worktree，在其中读写文件、commit、push 分支，并安全释放。
