@@ -612,3 +612,89 @@ Node 18 / 20 / 22 × git **2.32（声明下限）/ 2.37 / 最新**。
 | worktree 创建顺序写错 | 全量拉取 blob，"只下载指定目录"失效 | §3.5 固定顺序；集成测试断言对象数量 |
 | token 泄露到日志或 `.git/config` | 安全事故 | 只用 `-c http.extraheader` 注入；统一脱敏 + 专项单测 |
 | 冲突态 worktree 长期滞留 | 占磁盘、语义不清 | 不自动清理（避免丢改动），但 `gc()` 需能报告这类 worktree 供宿主处置 |
+
+---
+
+## 附录 A：实现记录（2026-08-29）
+
+本节记录实现过程中相对上文设计的**实际偏离**与**新发现**。上文保留原设计以便对照；
+以本节为准。
+
+### A.1 技术选型偏离
+
+| 项 | 设计 | 实际 | 原因 |
+| --- | --- | --- | --- |
+| git 进程层 | simple-git | `node:child_process.execFile` | simple-git 的 `timeout` 是**无输出超时**而非总时长超时，无法实现 §5.1 要求的单条命令总超时；且在 `GitExecutor` 这套设计下参数传递、并发队列、进度解析、错误映射全部自理，simple-git 只会被当作 `.raw()` 透传使用，价值接近于零。 |
+| 类型声明产物 | tsup `dts: true` | `tsc -p tsconfig.build.json` | tsup 的 rollup-plugin-dts 在 TypeScript 5.9 下崩溃（`useCaseSensitiveFileNames`）。ESM/CJS 仍由 tsup 产出。 |
+
+### A.2 实现中发现的缺陷（设计未覆盖）
+
+1. **rebase 冲突没有 `MERGE_HEAD`。**
+   原设计的 merge 状态判定只看 `MERGE_HEAD`，会把停在 rebase 冲突中的 worktree 误判为
+   干净，`withSession` 随即将其删除，丢失冲突现场。
+   → 新增 `operationInProgress(): 'merge' | 'rebase' | 'cherry-pick' | null`，同时检查
+   `MERGE_HEAD`、`rebase-merge` / `rebase-apply` 目录与 `CHERRY_PICK_HEAD`。
+
+2. **rebase 中 `git commit` 会静默出错。**
+   它"成功"提交，但把 rebase 卡在未完成状态与游离 HEAD 上。
+   → `commit()` 在 rebase 进行中直接抛 `INVALID_ARGUMENT` 并指向新增的
+   `continueRebase()`；`abortMerge()` 按当前操作分派到 `merge/rebase/cherry-pick --abort`。
+
+3. **rebase 期间 git 的 stage 2/3 语义是反的。**
+   stage 2 是被 rebase 到的上游，stage 3 才是正在重放的提交。原样透传会让宿主
+   `take: 'ours'` 拿到对方的内容 —— 这是会静默产出错误结果的一类缺陷。
+   → 统一归一化：`ours` 永远表示**当前分支的改动**，发生交换时置
+   `Conflict.sidesSwapped = true`（`raw` 保持 git 原始顺序），`resolveByHunks` 在套用前
+   把 choices 换回去。`deleted_by_them` / `deleted_by_us` 同样对调。
+
+4. **session 的 author 写进了共享 `.git/config`。**
+   并发创建 20 个 session 时争抢 `config.lock`（间歇性失败），且所有 session 共用同一个
+   身份。
+   → 改用 `git config --worktree`（`extensions.worktreeConfig` 正为此而设）。
+
+5. **CRLF 文件的冲突标记解析失败。**
+   `=======\r` 不匹配 `/^=======$/`，导致整个冲突块解析崩溃。
+   → 标记检测前统一去掉行尾 `\r`；内容行保留原样以保证写回字节一致。
+
+6. **`SessionConfig.retryOnReject` 未被传递给 `GitRepo`**，session 级配置静默失效。
+   → 已修复并补回归测试。
+
+7. **`publish` 无法返回冲突。**
+   原设计让它走 `withSession`，而 `withSession` 在冲突时抛 `MERGE_IN_PROGRESS`，
+   把 `PushResult` 的 conflict 分支吞掉。
+   → `publish` 自行管理 session：冲突时**返回**结果并保留 worktree，其余情况释放。
+   `PushResult` 的 conflict 分支新增 `worktreeDir` 字段供 `attachSession` 接管。
+   → 新增 `dispose({ keepWorktree })`，让保留 worktree 的同时能释放 store 引用计数
+   （否则 `activeSessions` 永远降不回来，`gc` 会被永久阻塞）。
+
+### A.3 git 行为确认
+
+- **cone 模式的 sparse-checkout 总是包含仓库根目录的文件**（如 `README.md`）。
+  这是 git 的固有行为，无法关闭。本包的 `PathGuard` 仍拒绝对根文件的写入，
+  使实际可写范围严格等于声明的 `sparsePaths`。
+- **rename/rename 冲突在索引中是三条各只有一个 stage 的记录**
+  （base 在旧路径、ours 在我方新路径、theirs 在对方新路径），而非同一路径上的多 stage。
+  归组依赖 `git diff --name-status -M`；映射缺失时退化为按单条上报，不抛错阻塞。
+
+### A.4 API 增补
+
+`exists()` · `merge(ref, opts)` · `continueRebase()` · `operationInProgress()` ·
+`recover({ abortOperation, clearIndexLock })` · `RepoStore.forge` getter ·
+`dispose({ keepWorktree })` · `gc({ maxAgeDays | maxAgeMs })`
+
+`setSparsePaths` 接受 `SparsePathInput[]`（字符串简写与对象混用）而非要求完整的
+`SparsePath[]`。
+
+### A.5 未实现
+
+- `gc({ maxTotalBytes })` —— 需要递归统计目录体积，当前只按空闲时长回收。
+- SSH 认证、GitLab/Bitbucket：按原设计不在第一版范围内，接口已预留。
+
+### A.6 验证状态
+
+- **288 个测试全部通过**（`bun test`），其中集成测试用本地 bare 仓库，不联网。
+  包含 20 个 session 的并发压力测试、五类冲突的真 git 覆盖、二进制字节一致性、
+  以及"创建 sparse worktree 期间不发生全量 blob 拉取"的对象计数断言。
+- 本地实测 git 版本为 **2.50.1**。**声明下限 2.32 尚未在本地验证**，
+  由 CI 矩阵（`.github/workflows/ci.yml`，node 18/20/22 × git 2.32/system）实测钉死；
+  若 2.32 不成立需上调 `MIN_GIT` 并同步本文档。

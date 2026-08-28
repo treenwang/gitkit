@@ -144,7 +144,10 @@ export class RepoManager {
     return true
   }
 
-  async gc(opts: { maxAgeMs?: number } = {}): Promise<GcReport> {
+  async gc(opts: { maxAgeMs?: number; maxAgeDays?: number } = {}): Promise<GcReport> {
+    const maxAgeMs = opts.maxAgeMs ?? (opts.maxAgeDays !== undefined
+      ? opts.maxAgeDays * 86_400_000
+      : undefined)
     const report: GcReport = { removed: [], skippedActive: [] }
     for (const [key, pending] of [...this.#stores]) {
       const store = await pending.catch(() => undefined)
@@ -153,7 +156,7 @@ export class RepoManager {
         report.skippedActive.push(key)
         continue
       }
-      if (opts.maxAgeMs !== undefined && store.idleMs < opts.maxAgeMs) continue
+      if (maxAgeMs !== undefined && store.idleMs < maxAgeMs) continue
       this.#stores.delete(key)
       await rm(store.repoDir, { recursive: true, force: true })
       report.removed.push(key)

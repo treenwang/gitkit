@@ -110,6 +110,24 @@ describe('push 状态机', () => {
     await repo.dispose()
   })
 
+  test('session 级 retryOnReject: false 生效（无需在 push 层重复指定）', async () => {
+    const repo = await store.createSession({ ...SESSION('feat/p6b'), retryOnReject: false })
+    await repo.writeFile('docs/x.md', 'v1')
+    await repo.commit({ message: 'v1' })
+    await repo.push()
+    pushToRemote(root, bare, { 'docs/other.md': 'o' },
+      { branch: 'feat/p6b', message: 'theirs' })
+    await repo.writeFile('docs/x.md', 'v2')
+    await repo.commit({ message: 'v2' })
+
+    const r = await repo.push()
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.reason).toBe('rejected')
+    // 未重试，所以没有 pull 到对方的文件
+    expect(await repo.exists('docs/other.md')).toBe(false)
+    await repo.dispose()
+  })
+
   test('session 级 retryOnReject 可被单次 push 覆盖', async () => {
     const repo = await store.createSession({ ...SESSION('feat/p6'), retryOnReject: false })
     await repo.writeFile('docs/x.md', 'v1')

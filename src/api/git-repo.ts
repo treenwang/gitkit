@@ -11,6 +11,7 @@ import {
 } from '../domain/conflict-parser'
 import { buildResolvedContent } from '../domain/conflict-writer'
 import { resolveWithin } from '../domain/path-guard'
+import { normalizeSparsePaths } from '../domain/sparse-manager'
 import {
   decideRetry, deriveMergeMode, needsDerivation, resolveMergeMode,
 } from '../domain/push-policy'
@@ -27,6 +28,7 @@ import {
   type PushResult,
   type Resolution,
   type SparsePath,
+  type SparsePathInput,
 } from '../types'
 
 export type InProgressOperation = 'merge' | 'rebase' | 'cherry-pick' | null
@@ -343,8 +345,9 @@ export class GitRepo {
     return out ? out.split('\n').filter(Boolean) : []
   }
 
-  async setSparsePaths(paths: SparsePath[]): Promise<void> {
+  async setSparsePaths(input: readonly SparsePathInput[]): Promise<void> {
     this.assertLive()
+    const paths = normalizeSparsePaths(input)
     if (paths.length === 0) {
       await this.git(['sparse-checkout', 'disable'])
     } else {

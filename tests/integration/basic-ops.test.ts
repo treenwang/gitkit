@@ -111,11 +111,17 @@ describe('基础操作', () => {
 
   test('setSparsePaths 增量生效', async () => {
     expect(await repo.exists('src/index.ts')).toBe(false)
-    await repo.setSparsePaths([
-      { path: 'docs', requireChecks: true },
-      { path: 'src', requireChecks: true },
-    ])
+    // 接受字符串简写与对象形态混用
+    await repo.setSparsePaths(['docs', { path: 'src', requireChecks: true }])
     expect(await repo.readFile('src/index.ts')).toBe('export const x = 1\n')
+    expect(repo.sparsePaths.map((p) => p.path)).toEqual(['docs', 'src'])
+  })
+
+  test('setSparsePaths 收缩范围后，越界写入被拒', async () => {
+    await repo.setSparsePaths(['docs', 'src'])
+    expect(await repo.exists('src/index.ts')).toBe(true)
+    await repo.setSparsePaths(['docs'])
+    await expect(repo.writeFile('src/x.ts', 'x')).rejects.toThrow()
   })
 
   test('listBranches 列出本地与远端分支', async () => {

@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # 类型检查与打包只跑一次，与运行时矩阵无关
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: latest }
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run build
+
+  # git 版本矩阵是必需的：sparse-checkout 与 worktree 组合的行为随版本变化。
+  # 2.32 是 package.json 中声明的下限，必须真正跑通。
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '20', '22']
+        git: ['2.32.0', 'system']
+    name: node ${{ matrix.node }} / git ${{ matrix.git }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: latest }
+
+      - name: Build git ${{ matrix.git }} from source
+        if: matrix.git != 'system'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gettext libcurl4-openssl-dev libexpat1-dev \
+            libssl-dev libz-dev tcl-dev
+          curl -fsSL "https://github.com/git/git/archive/refs/tags/v${{ matrix.git }}.tar.gz" \
+            | tar -xz
+          cd "git-${{ matrix.git }}"
+          make prefix=/usr/local -j"$(nproc)" NO_TCLTK=1 NO_GETTEXT=1 all
+          sudo make prefix=/usr/local NO_TCLTK=1 NO_GETTEXT=1 install
+
+      - name: Report git version under test
+        run: git --version
+
+      - run: bun install --frozen-lockfile
+      - run: bun test

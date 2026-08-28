@@ -57,6 +57,8 @@ export class RepoStore {
   get key(): string { return this.#d.layout.key }
   get url(): string { return this.#d.url }
   get activeSessions(): number { return this.#active }
+  /** 已配置的 forge（GitHub）；未启用时为 undefined。 */
+  get forge(): ForgeProvider | undefined { return this.#d.forge }
   get idleMs(): number { return Date.now() - this.#lastUsed }
 
   #touch(): void { this.#lastUsed = Date.now() }
@@ -177,7 +179,7 @@ export class RepoStore {
       throw e
     }
 
-    return this.#wrap(created, cfg.branch, sparse, cfg.author)
+    return this.#wrap(created, cfg.branch, sparse, cfg.author, cfg.retryOnReject)
   }
 
   /**
@@ -318,6 +320,7 @@ export class RepoStore {
     branch: string,
     sparse: SparsePath[],
     author: { name: string; email: string },
+    retryOnReject?: boolean,
   ): GitRepo {
     this.#retain()
     let released = false
@@ -329,6 +332,7 @@ export class RepoStore {
       exec: this.#d.exec,
       token: this.#d.token,
       ...(this.#d.forge ? { forge: this.#d.forge } : {}),
+      ...(retryOnReject !== undefined ? { retryOnReject } : {}),
       fetch: () => this.fetch(),
       onDispose: async (keepWorktree: boolean) => {
         if (released) return
