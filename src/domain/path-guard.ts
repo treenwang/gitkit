@@ -29,6 +29,9 @@ export function resolveWithin(
   if (rel === '..' || rel.startsWith('../')) {
     throw new GitOpError('PATH_TRAVERSAL', `路径越出 worktree: ${relPath}`)
   }
+  if (rel === '.' || rel === '') {
+    throw new GitOpError('INVALID_ARGUMENT', `路径不能指向 worktree 根自身: ${relPath}`)
+  }
   if (rel === '.git' || rel.startsWith('.git/')) {
     throw new GitOpError('PATH_TRAVERSAL', `不允许访问 .git 目录: ${relPath}`)
   }

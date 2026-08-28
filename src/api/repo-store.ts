@@ -143,10 +143,14 @@ export class RepoStore {
       const addArgs = ['worktree', 'add', '--no-checkout']
       if (existing === 'local') {
         addArgs.push(dir, cfg.branch)
-      } else if (existing === 'remote') {
-        addArgs.push('-b', cfg.branch, dir, `origin/${cfg.branch}`)
       } else {
-        addArgs.push('-b', cfg.branch, dir, cfg.base ?? (await this.#defaultBase()))
+        // --no-track：建立跟踪关系会往共享 .git/config 写 branch.<name>.*，
+        // 是又一处共享可变状态。本包所有操作都显式指定 refspec 与
+        // origin/<branch>，不依赖 upstream 跟踪。
+        const base = existing === 'remote'
+          ? `origin/${cfg.branch}`
+          : cfg.base ?? (await this.#defaultBase())
+        addArgs.push('--no-track', '-b', cfg.branch, dir, base)
       }
       await this.#d.exec.run(addArgs, {
         cwd: this.storeDir, token: this.#d.token, phase: 'worktree',
@@ -268,6 +272,13 @@ export class RepoStore {
   async attachSession(worktreeDir: string): Promise<GitRepo> {
     if (!existsSync(worktreeDir)) {
       throw new GitOpError('INVALID_ARGUMENT', `worktree 不存在: ${worktreeDir}`)
+    }
+    const registered = await this.#listRegisteredWorktrees()
+    if (!registered.includes(worktreeDir)) {
+      throw new GitOpError(
+        'INVALID_ARGUMENT',
+        `${worktreeDir} 不是本 store（${this.key}）注册的 worktree`,
+      )
     }
     const branch = await this.#d.exec.run(['rev-parse', '--abbrev-ref', 'HEAD'], {
       cwd: worktreeDir,

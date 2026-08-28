@@ -222,6 +222,14 @@ describe('session 生命周期', () => {
     await a.dispose()
   })
 
+  test('attachSession 拒绝不属于本 store 的目录', async () => {
+    expect(await codeOf(store.attachSession(join(root, 'not-a-worktree'))))
+      .toBe('INVALID_ARGUMENT')
+    const outside = join(root, 'outside-wt')
+    mkdirSync(outside, { recursive: true })
+    expect(await codeOf(store.attachSession(outside))).toBe('INVALID_ARGUMENT')
+  })
+
   test('pruneOrphans 回收无主目录', async () => {
     const orphan = join(store.worktreeRoot, 'orphan-xyz')
     mkdirSync(join(orphan, 'sub'), { recursive: true })

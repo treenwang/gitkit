@@ -244,7 +244,10 @@ export class GitRepo {
 
   async pushBranch(opts: { force?: boolean } = {}): Promise<PushBranchResult> {
     this.assertLive()
-    const args = ['push', '--set-upstream']
+    // 不用 --set-upstream：它会写共享的 .git/config（branch.<name>.remote/merge），
+    // 并发 push 时争抢 config.lock。本包所有操作都显式指定 refspec 与
+    // origin/<branch>，不依赖 upstream 跟踪。
+    const args = ['push']
     if (opts.force) args.push('--force-with-lease')
     args.push('origin', `${this.#d.branch}:${this.#d.branch}`)
     try {

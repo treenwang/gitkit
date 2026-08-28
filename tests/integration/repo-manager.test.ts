@@ -97,6 +97,29 @@ describe('RepoManager', () => {
     }
   })
 
+  test('同一 URL 用不同配置再次 store() 时报错，而非静默沿用', async () => {
+    const m = new RepoManager({ root: repos })
+    await m.store({ url: urlOf(bare) })
+    const code = await m
+      .store({ url: urlOf(bare), github: { token: 'T' } })
+      .then(() => 'NO_THROW', (e: GitOpError) => e.code)
+    expect(code).toBe('INVALID_ARGUMENT')
+  })
+
+  test('配置相同时重复调用仍复用', async () => {
+    const m = new RepoManager({ root: repos })
+    const a = await m.store({ url: urlOf(bare), depth: undefined })
+    expect(await m.store({ url: urlOf(bare) })).toBe(a)
+  })
+
+  test('evict 后可用新配置重新 store()', async () => {
+    const m = new RepoManager({ root: repos })
+    await m.store({ url: urlOf(bare) })
+    await m.evict(urlOf(bare))
+    const s2 = await m.store({ url: urlOf(bare), github: { token: 'T' } })
+    expect(s2.forge).toBeDefined()
+  })
+
   test('evict 删除 store 目录', async () => {
     const m = new RepoManager({ root: repos })
     const s = await m.store({ url: urlOf(bare) })

@@ -656,10 +656,23 @@ Node 18 / 20 / 22 × git **2.32（声明下限）/ 2.37 / 最新**。
    `=======\r` 不匹配 `/^=======$/`，导致整个冲突块解析崩溃。
    → 标记检测前统一去掉行尾 `\r`；内容行保留原样以保证写回字节一致。
 
-6. **`SessionConfig.retryOnReject` 未被传递给 `GitRepo`**，session 级配置静默失效。
+6. **共享 `.git/config` 的写入不止一处。**
+   除 A.2.4 的 author 外，`git push --set-upstream` 与
+   `git worktree add -b <branch> <dir> origin/x` 建立的跟踪关系都会写
+   `branch.<name>.*` 到共享 config —— 同一类竞态与污染。
+   → push 去掉 `--set-upstream`，worktree 创建加 `--no-track`。本包所有操作都显式
+   指定 refspec 与 `origin/<branch>`，不依赖 upstream 跟踪。
+   现在 session 的创建与 push 全程**不写任何共享 config**。
+
+7. **同一 URL 用不同配置重复 `store()` 会静默沿用第一次的配置**，
+   例如第二次才传 `github` 却拿到没有 forge 的 store。
+   → 比对配置签名，不一致时抛 `INVALID_ARGUMENT`（store 是共享对象库，
+   同一 URL 只能有一份）。
+
+8. **`SessionConfig.retryOnReject` 未被传递给 `GitRepo`**，session 级配置静默失效。
    → 已修复并补回归测试。
 
-7. **`publish` 无法返回冲突。**
+9. **`publish` 无法返回冲突。**
    原设计让它走 `withSession`，而 `withSession` 在冲突时抛 `MERGE_IN_PROGRESS`，
    把 `PushResult` 的 conflict 分支吞掉。
    → `publish` 自行管理 session：冲突时**返回**结果并保留 worktree，其余情况释放。
@@ -692,7 +705,7 @@ Node 18 / 20 / 22 × git **2.32（声明下限）/ 2.37 / 最新**。
 
 ### A.6 验证状态
 
-- **288 个测试全部通过**（`bun test`），其中集成测试用本地 bare 仓库，不联网。
+- **295 个测试全部通过**（`bun test`），其中集成测试用本地 bare 仓库，不联网。
   包含 20 个 session 的并发压力测试、五类冲突的真 git 覆盖、二进制字节一致性、
   以及"创建 sparse worktree 期间不发生全量 blob 拉取"的对象计数断言。
 - 本地实测 git 版本为 **2.50.1**。**声明下限 2.32 尚未在本地验证**，

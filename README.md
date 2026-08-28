@@ -185,7 +185,7 @@ FORGE_NOT_INSTALLED · FORGE_API_ERROR · UNKNOWN
 
 ```bash
 bun install
-bun test          # 286 个测试，集成测试用本地 bare 仓库，不联网
+bun test          # 295 个测试，集成测试用本地 bare 仓库，不联网
 bun run typecheck
 bun run build
 ```

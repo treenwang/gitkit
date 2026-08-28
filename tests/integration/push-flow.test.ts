@@ -153,6 +153,39 @@ describe('push 状态机', () => {
   })
 })
 
+describe('并发 push', () => {
+  test('12 个 session 并发 push 各自的分支全部成功', async () => {
+    const repos = await Promise.all(
+      Array.from({ length: 12 }, (_, i) => store.createSession(SESSION(`feat/cp${i}`))),
+    )
+    await Promise.all(repos.map(async (r, i) => {
+      await r.writeFile(`docs/cp${i}.md`, `c${i}`)
+      await r.commit({ message: `c${i}` })
+    }))
+    const results = await Promise.all(repos.map((r) => r.push()))
+    expect(results.every((r) => r.ok)).toBe(true)
+
+    const refs = git(root, 'ls-remote', '--heads', bare)
+    for (let i = 0; i < 12; i += 1) expect(refs).toContain(`refs/heads/feat/cp${i}`)
+    await Promise.all(repos.map((r) => r.dispose()))
+  })
+
+  test('push 不写共享 .git/config（不依赖 upstream 跟踪）', async () => {
+    const repo = await store.createSession(SESSION('feat/noup'))
+    await repo.writeFile('docs/x.md', 'x')
+    await repo.commit({ message: 'x' })
+    await repo.push()
+    let value = 'PRESENT'
+    try {
+      value = git(store.storeDir, 'config', '--local', '--get', 'branch.feat/noup.remote').trim()
+    } catch {
+      value = 'ABSENT'
+    }
+    expect(value).toBe('ABSENT')
+    await repo.dispose()
+  })
+})
+
 describe('withSession 退出契约', () => {
   test('正常返回时释放 worktree', async () => {
     let dir = ''

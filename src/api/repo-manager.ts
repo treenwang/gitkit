@@ -35,11 +35,23 @@ export type GcReport = { removed: string[]; skippedActive: string[] }
 
 const MIN_GIT = { major: 2, minor: 32, patch: 0 }
 
+/** store 是共享对象库，同一 URL 只能有一份；配置不一致必须报错而非静默沿用。 */
+function storeSignature(cfg: StoreConfig, fallbackToken?: string): string {
+  return JSON.stringify({
+    token: cfg.auth?.token ?? fallbackToken ?? null,
+    depth: cfg.depth ?? null,
+    filter: cfg.filter ?? 'blob:none',
+    github: cfg.github ? { baseUrl: cfg.github.baseUrl ?? null, token: cfg.github.token ?? null } : null,
+    forge: cfg.forge ? 'custom' : null,
+  })
+}
+
 export class RepoManager {
   readonly #cfg: ManagerConfig
   readonly #exec: GitExecutor
   readonly #mutex = new StoreMutex()
   readonly #stores = new Map<string, Promise<RepoStore>>()
+  readonly #signatures = new Map<string, string>()
   #preflight?: Promise<void>
 
   constructor(cfg: ManagerConfig) {
@@ -76,8 +88,20 @@ export class RepoManager {
     await this.#ensurePreflight()
     const layout = planLayout(this.#cfg.root, cfg.url)
 
+    const signature = storeSignature(cfg, this.#cfg.auth?.token)
     const existing = this.#stores.get(layout.key)
-    if (existing) return existing
+    if (existing) {
+      const prev = this.#signatures.get(layout.key)
+      if (prev !== undefined && prev !== signature) {
+        throw new GitOpError(
+          'INVALID_ARGUMENT',
+          `同一个 URL 只能有一个 store（共享对象库），但本次配置与首次不同：${cfg.url}。` +
+            `请在首次调用时就给全配置，或先 evict 再重新 store。`,
+        )
+      }
+      return existing
+    }
+    this.#signatures.set(layout.key, signature)
 
     const created = this.#mutex
       .run(layout.key, async () => {
@@ -112,6 +136,7 @@ export class RepoManager {
       })
       .catch((e) => {
         this.#stores.delete(layout.key)
+        this.#signatures.delete(layout.key)
         throw e
       })
 
@@ -138,6 +163,7 @@ export class RepoManager {
       const store = await pending.catch(() => undefined)
       if (store && store.activeSessions > 0) return false
       this.#stores.delete(layout.key)
+      this.#signatures.delete(layout.key)
     }
     if (!existsSync(layout.repoDir)) return false
     await rm(layout.repoDir, { recursive: true, force: true })
@@ -158,6 +184,7 @@ export class RepoManager {
       }
       if (maxAgeMs !== undefined && store.idleMs < maxAgeMs) continue
       this.#stores.delete(key)
+      this.#signatures.delete(key)
       await rm(store.repoDir, { recursive: true, force: true })
       report.removed.push(key)
     }

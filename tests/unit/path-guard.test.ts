@@ -54,6 +54,11 @@ describe('resolveWithin', () => {
     expect(codeOf(() => resolveWithin(WT, '', SPARSE))).toBe('INVALID_ARGUMENT')
   })
 
+  test('解析为 worktree 根自身的路径被拒', () => {
+    expect(codeOf(() => resolveWithin(WT, '.', []))).toBe('INVALID_ARGUMENT')
+    expect(codeOf(() => resolveWithin(WT, 'docs/..', []))).toBe('INVALID_ARGUMENT')
+  })
+
   test('.git 目录一律拒绝', () => {
     expect(codeOf(() => resolveWithin(WT, '.git/config', []))).toBe('PATH_TRAVERSAL')
   })
