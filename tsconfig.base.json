@@ -3,11 +3,24 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": ["ES2022"],
+    "lib": [
+      "ES2022"
+    ],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    "paths": {
+      "@aaxis/gitkit": [
+        "./packages/core/src/index.ts"
+      ],
+      "@aaxis/gitkit-client": [
+        "./packages/client/src/index.ts"
+      ],
+      "@aaxis/gitkit-server": [
+        "./packages/server/src/index.ts"
+      ]
+    }
   }
 }

@@ -11,6 +11,19 @@
         "typescript": "^5.9.3",
       },
     },
+    "packages/client": {
+      "name": "@aaxis/gitkit-client",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@aaxis/gitkit": "workspace:*",
+      },
+      "peerDependencies": {
+        "@aaxis/gitkit": "workspace:*",
+      },
+      "optionalPeers": [
+        "@aaxis/gitkit",
+      ],
+    },
     "packages/core": {
       "name": "@aaxis/gitkit",
       "version": "0.0.0",
@@ -21,9 +34,21 @@
         "@octokit/rest",
       ],
     },
+    "packages/server": {
+      "name": "@aaxis/gitkit-server",
+      "version": "0.0.0",
+      "dependencies": {
+        "@aaxis/gitkit": "workspace:*",
+        "@aaxis/gitkit-client": "workspace:*",
+      },
+    },
   },
   "packages": {
     "@aaxis/gitkit": ["@aaxis/gitkit@workspace:packages/core"],
+
+    "@aaxis/gitkit-client": ["@aaxis/gitkit-client@workspace:packages/client"],
+
+    "@aaxis/gitkit-server": ["@aaxis/gitkit-server@workspace:packages/server"],
 
     "@esbuild/aix-ppc64": ["@esbuild/aix-ppc64@0.27.7", "", { "os": "aix", "cpu": "ppc64" }, "sha512-EKX3Qwmhz1eMdEJokhALr0YiD0lhQNwDqkPYyPhiSwKrh7/4KRjQc04sZ8db+5DVVnZ1LmbNDI1uAMPEUBnQPg=="],
 

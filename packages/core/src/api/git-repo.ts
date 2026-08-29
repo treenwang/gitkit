@@ -11,6 +11,7 @@ import {
 } from '../domain/conflict-parser'
 import { buildResolvedContent } from '../domain/conflict-writer'
 import { resolveWithin } from '../domain/path-guard'
+import { assertValidRevision } from '../domain/ref-guard'
 import { normalizeSparsePaths } from '../domain/sparse-manager'
 import {
   decideRetry, deriveMergeMode, needsDerivation, resolveMergeMode,
@@ -146,8 +147,12 @@ export class GitRepo {
     const paths = opts.paths ?? this.#d.sparse.map((s) => s.path)
     for (const p of paths) resolveWithin(this.#d.dir, p, this.#d.sparse)
 
-    const args = ['diff', `--unified=${opts.context ?? 3}`]
-    if (opts.against) args.push(`${opts.against}...HEAD`)
+    const context = Number(opts.context ?? 3)
+    if (!Number.isInteger(context) || context < 0 || context > 1000) {
+      throw new GitOpError('INVALID_ARGUMENT', `context 必须是 0..1000 的整数: ${opts.context}`)
+    }
+    const args = ['diff', `--unified=${context}`]
+    if (opts.against) args.push(`${assertValidRevision(opts.against)}...HEAD`)
     args.push('--')
     if (paths.length > 0) args.push(...paths)
 
@@ -262,7 +267,8 @@ export class GitRepo {
   ): Promise<{ conflicted: boolean }> {
     this.assertLive()
     await this.#d.fetch()
-    const ref = opts.ref ?? `origin/${this.#d.branch}`
+    // ref 可能来自不可信输入；以 - 开头会被 git 当作选项解析
+    const ref = assertValidRevision(opts.ref ?? `origin/${this.#d.branch}`)
     const args = opts.strategy === 'rebase'
       ? ['rebase', ref]
       : ['merge', '--no-edit', ref]
@@ -377,7 +383,7 @@ export class GitRepo {
 
   /** 只用 --name-only：partial clone 下需要内容的 diff 会触发惰性拉取 blob。 */
   async diffSummary(opts: { against?: string } = {}): Promise<string[]> {
-    const target = opts.against ?? 'HEAD~1'
+    const target = assertValidRevision(opts.against ?? 'HEAD~1')
     const out = await this.git(['diff', '--name-only', `${target}...HEAD`])
     return out ? out.split('\n').filter(Boolean) : []
   }
@@ -619,7 +625,7 @@ export class GitRepo {
     this.assertLive()
     const args = ['merge', '--no-edit']
     if (opts.noFastForward) args.push('--no-ff')
-    args.push(ref)
+    args.push(assertValidRevision(ref))
     try {
       await this.git(args)
       return { conflicted: false }
