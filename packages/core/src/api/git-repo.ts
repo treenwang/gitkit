@@ -156,8 +156,31 @@ export class GitRepo {
     args.push('--')
     if (paths.length > 0) args.push(...paths)
 
-    const patch = await this.git(args)
+    const tracked = await this.git(args)
+    // git diff 不显示未跟踪文件，但"新建一个文件"是最常见的改动之一。
+    // 不用 `add --intent-to-add`（读操作不该改索引），改为逐个走 --no-index。
+    const untracked = opts.against ? '' : await this.#untrackedPatch(paths, context)
+
+    const patch = [tracked, untracked].filter(Boolean).join('\n')
     return { patch, truncated: false }
+  }
+
+  async #untrackedPatch(paths: readonly string[], context: number): Promise<string> {
+    const listArgs = ['ls-files', '--others', '--exclude-standard', '--']
+    if (paths.length > 0) listArgs.push(...paths)
+    const listed = await this.git(listArgs)
+    if (!listed) return ''
+
+    const parts: string[] = []
+    for (const file of listed.split('\n').filter(Boolean)) {
+      // --no-index 在两边不同时以退出码 1 结束，这里是预期结果而非失败
+      const r = await this.#d.exec.exec(
+        ['diff', '--no-index', `--unified=${context}`, '--', '/dev/null', file],
+        { cwd: this.#d.dir, allowExitCodes: [1] },
+      )
+      if (r.stdout) parts.push(r.stdout)
+    }
+    return parts.join('\n')
   }
 
   // ------------------------------------------------------------ 状态

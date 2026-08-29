@@ -183,6 +183,58 @@ describe('自动保存状态机', () => {
     expect(result.current.etag).toBe('etag-docs/b.md')
   })
 
+  test('切换文件前把未落盘的改动保存掉，不静默丢弃', async () => {
+    const client = fakeClient({
+      'files.read': (p: any) => ({
+        binary: false, content: `body of ${p.path}`, etag: `etag-${p.path}`,
+        size: 1, truncated: false,
+      }),
+      'files.write': () => ({ etag: 'e2' }),
+    }, calls)
+    const { result, rerender } = renderHook(({ path }) => useFile(path, { debounceMs: 10_000 }), {
+      wrapper: wrapper(client), initialProps: { path: 'docs/a.md' },
+    })
+    await waitFor(() => expect(result.current.content).toBe('body of docs/a.md'))
+    act(() => { result.current.setContent('unsaved edit') })
+
+    rerender({ path: 'docs/b.md' })
+    await waitFor(() => expect(calls.some((c) => c.op === 'files.write')).toBe(true))
+    const w = calls.find((c) => c.op === 'files.write')!
+    // 保存的必须是**旧文件**的路径与内容
+    expect(w.params.path).toBe('docs/a.md')
+    expect(w.params.content).toBe('unsaved edit')
+    expect(w.params.baseEtag).toBe('etag-docs/a.md')
+  })
+
+  test('没有待保存改动时切换文件不产生写入', async () => {
+    const client = fakeClient({
+      'files.read': (p: any) => ({
+        binary: false, content: 'x', etag: 'e', size: 1, truncated: false,
+      }),
+    }, calls)
+    const { result, rerender } = renderHook(({ path }) => useFile(path), {
+      wrapper: wrapper(client), initialProps: { path: 'docs/a.md' },
+    })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    rerender({ path: 'docs/b.md' })
+    await act(async () => { await tick(20) })
+    expect(calls.filter((c) => c.op === 'files.write')).toHaveLength(0)
+  })
+
+  test('极短防抖下保存的是最新内容，不是上一版', async () => {
+    const client = fakeClient({
+      'files.read': () => READ_OK,
+      'files.write': () => ({ etag: 'e2' }),
+    }, calls)
+    const { result } = renderHook(() => useFile('docs/a.md', { debounceMs: 0 }), {
+      wrapper: wrapper(client),
+    })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    act(() => { result.current.setContent('final') })
+    await waitFor(() => expect(calls.some((c) => c.op === 'files.write')).toBe(true))
+    expect(calls.find((c) => c.op === 'files.write')!.params.content).toBe('final')
+  })
+
   test('页面隐藏时用 keepalive 抢救未落盘的改动', async () => {
     const { result } = await mounted({ debounceMs: 10_000 })
     act(() => { result.current.setContent('rescue me') })

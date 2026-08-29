@@ -71,6 +71,33 @@ describe('getDiff', () => {
     expect(patch).toContain('+# changed')
   })
 
+  test('新建的未跟踪文件也出现在 diff 里', async () => {
+    await repo.writeFile('docs/brand-new.md', '# 新文件\n')
+    const { patch } = await repo.getDiff()
+    expect(patch).toContain('docs/brand-new.md')
+    expect(patch).toContain('+# 新文件')
+  })
+
+  test('已跟踪的修改与新建文件同时出现', async () => {
+    await repo.writeFile('docs/a.md', '# changed\n')
+    await repo.writeFile('docs/new.md', 'new\n')
+    const { patch } = await repo.getDiff()
+    expect(patch).toContain('docs/a.md')
+    expect(patch).toContain('docs/new.md')
+  })
+
+  test('未跟踪文件同样受 pathspec 约束', async () => {
+    await repo.writeFile('docs/inside.md', 'x\n')
+    const { patch } = await repo.getDiff({ paths: ['docs/api'] })
+    expect(patch).not.toContain('docs/inside.md')
+  })
+
+  test('指定 against 时不混入未跟踪文件（它们不在提交区间里）', async () => {
+    await repo.writeFile('docs/untracked.md', 'x\n')
+    const { patch } = await repo.getDiff({ against: 'origin/main' })
+    expect(patch).not.toContain('docs/untracked.md')
+  })
+
   test('无改动时返回空 patch', async () => {
     expect((await repo.getDiff()).patch).toBe('')
   })

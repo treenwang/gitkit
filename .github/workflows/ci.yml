@@ -54,4 +54,5 @@ jobs:
         run: git --version
 
       - run: bun install --frozen-lockfile
+      # 浏览器侧的包用 happy-dom；由 bunfig.toml 预加载
       - run: bun test

@@ -1,4 +1,28 @@
-# @aaxis/gitkit
+# gitkit
+
+在服务端对 Git 仓库做程序化操作，并让前端直接编辑文件、提交、发起 PR。
+
+| 包 | 环境 | 职责 |
+| --- | --- | --- |
+| [`@aaxis/gitkit`](packages/core) | 服务端 | 核心：sparse checkout、worktree 隔离并发、结构化冲突、GitHub PR |
+| [`@aaxis/gitkit-server`](packages/server) | 服务端 | HTTP 传输层：Web 标准 handler + Express 适配器 |
+| [`@aaxis/gitkit-client`](packages/client) | 浏览器 | 类型化 RPC client，**零运行时依赖** |
+| [`@aaxis/gitkit-ui`](packages/ui) | 浏览器 | React hooks 与组件，**不打包 CSS、不含编辑器** |
+
+协议契约定义在 client 中、由 server 以 `import type` 复用，因此任何一处不一致都会在
+`bun run typecheck` 时失败 —— 契约测试即类型检查。
+
+```bash
+bun install
+bun test          # 474 个测试；集成测试用本地 bare 仓库，不联网
+bun run typecheck
+bun run build
+```
+
+设计文档见 [`docs/superpowers/specs/`](docs/superpowers/specs/)。
+
+---
+
 
 在服务端对 Git 仓库做程序化操作的可嵌入 npm 包：**只 checkout 指定目录**、
 **并发安全**、**冲突以结构化数据返回**，并可选集成 GitHub PR。

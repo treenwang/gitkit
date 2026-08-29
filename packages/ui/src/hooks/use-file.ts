@@ -77,8 +77,12 @@ export function useFile(path: string, opts: UseFileOptions = {}): UseFileResult 
   // 定时器与「最新值」都用 ref：回调被防抖延后执行，闭包里的 state 会是旧的
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const firstDirtyAt = useRef<number | undefined>(undefined)
-  const latest = useRef({ content, etag, path })
-  latest.current = { content, etag, path }
+  // 定时器回调被延后执行，闭包里的 state 会是旧的，因此用 ref 保存最新值。
+  // 关键：setContent 里**同步**写入这个 ref，而不是等 render —— 否则防抖极短时
+  // 定时器可能在 React 重渲染之前触发，保存的是上一版内容。
+  const latest = useRef<{ content: string | undefined; etag: string | undefined; path: string }>({
+    content: undefined, etag: undefined, path,
+  })
 
   const clearTimer = (): void => {
     if (timer.current !== undefined) {
@@ -109,18 +113,36 @@ export function useFile(path: string, opts: UseFileOptions = {}): UseFileResult 
           setEtag(undefined)
           setSize(r.size)
           setTruncated(false)
+          latest.current = { content: undefined, etag: undefined, path }
         } else {
           setBinary(false)
           setContentState(r.content)
           setEtag(r.etag)
           setSize(r.size)
           setTruncated(r.truncated)
+          latest.current = { content: r.content, etag: r.etag, path }
         }
       })
       .catch((e: Error) => { if (!cancelled) setLoadError(e) })
       .finally(() => { if (!cancelled) setLoading(false) })
 
-    return () => { cancelled = true; clearTimer() }
+    return () => {
+      cancelled = true
+      // 切换文件前必须落盘：否则用户点另一个文件，未过防抖的改动会被静默丢弃。
+      // 这里用上一次的快照（latest 尚未被新文件覆盖）触发一次保存。
+      if (timer.current !== undefined) {
+        clearTimer()
+        const snap = latest.current
+        if (snap.content !== undefined) {
+          const params: { path: string; content: string; baseEtag?: string } = {
+            path: snap.path, content: snap.content,
+          }
+          if (snap.etag !== undefined) params.baseEtag = snap.etag
+          void client.call('files.write', params).catch(() => undefined)
+        }
+      }
+      clearTimer()
+    }
   }, [client, path])
 
   // ---------------------------------------------------------------- 保存
@@ -166,6 +188,7 @@ export function useFile(path: string, opts: UseFileOptions = {}): UseFileResult 
 
   const setContent = useCallback(
     (next: string) => {
+      latest.current = { ...latest.current, content: next }
       setContentState(next)
       setSaveState('dirty')
       if (!autoSave) return
@@ -189,6 +212,11 @@ export function useFile(path: string, opts: UseFileOptions = {}): UseFileResult 
     if (!staleConflict) return
     setContentState(staleConflict.serverContent)
     setEtag(staleConflict.serverEtag)
+    latest.current = {
+      ...latest.current,
+      content: staleConflict.serverContent,
+      etag: staleConflict.serverEtag,
+    }
     setStale(undefined)
     setSaveError(undefined)
     setSaveState('clean')
