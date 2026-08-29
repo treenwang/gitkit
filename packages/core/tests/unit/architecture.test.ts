@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
+
+// 相对于本文件定位，而不是相对于 cwd —— 否则从仓库根目录跑测试会找不到 src/
+const SRC = resolve(import.meta.dir, '..', '..', 'src')
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -11,7 +14,7 @@ function walk(dir: string, out: string[] = []): string[] {
   return out
 }
 
-const files = walk('src')
+const files = walk(SRC)
 
 describe('架构约束', () => {
   test('只有 git-executor.ts 可以 import child_process', () => {

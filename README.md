@@ -1,4 +1,4 @@
-# @aaxis/git-operation
+# @aaxis/gitkit
 
 在服务端对 Git 仓库做程序化操作的可嵌入 npm 包：**只 checkout 指定目录**、
 **并发安全**、**冲突以结构化数据返回**，并可选集成 GitHub PR。
@@ -21,7 +21,7 @@
 ## 快速开始
 
 ```ts
-import { RepoManager } from '@aaxis/git-operation'
+import { RepoManager } from '@aaxis/gitkit'
 
 const manager = new RepoManager({
   root: '/data/repos',
@@ -185,7 +185,7 @@ FORGE_NOT_INSTALLED · FORGE_API_ERROR · UNKNOWN
 
 ```bash
 bun install
-bun test          # 295 个测试，集成测试用本地 bare 仓库，不联网
+bun test          # 295 个测试（全仓库），集成测试用本地 bare 仓库，不联网
 bun run typecheck
 bun run build
 ```

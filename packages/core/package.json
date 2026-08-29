@@ -1,0 +1,51 @@
+{
+  "name": "@aaxis/gitkit",
+  "version": "0.0.0",
+  "description": "Embeddable server-side git operations with sparse checkout, worktree-isolated concurrency, structured conflict resolution, and optional GitHub PR integration.",
+  "license": "UNLICENSED",
+  "private": false,
+  "keywords": [
+    "git",
+    "sparse-checkout",
+    "worktree",
+    "partial-clone",
+    "merge-conflict",
+    "github",
+    "pull-request"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "peerDependencies": {
+    "@octokit/rest": ">=20"
+  },
+  "peerDependenciesMeta": {
+    "@octokit/rest": {
+      "optional": true
+    }
+  },
+  "sideEffects": false
+}

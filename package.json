@@ -1,58 +1,19 @@
 {
-  "name": "@aaxis/git-operation",
+  "name": "@aaxis/gitkit-workspace",
   "version": "0.0.0",
-  "description": "Embeddable server-side git operations with sparse checkout, worktree-isolated concurrency, structured conflict resolution, and optional GitHub PR integration.",
-  "license": "UNLICENSED",
-  "private": false,
-  "keywords": [
-    "git",
-    "sparse-checkout",
-    "worktree",
-    "partial-clone",
-    "merge-conflict",
-    "github",
-    "pull-request"
-  ],
-  "main": "./dist/index.cjs",
-  "module": "./dist/index.js",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "engines": { "bun": ">=1.2", "node": ">=18" },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "bun run --filter '*' typecheck",
+    "build": "bun run --filter '*' build"
+  },
   "devDependencies": {
     "@types/bun": "^1.4.0",
     "@types/node": "^26.4.0",
     "tsup": "^8.5.1",
-    "typescript": "5.9.3"
-  },
-  "exports": {
-    ".": {
-      "import": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
-      },
-      "require": {
-        "types": "./dist/index.d.cts",
-        "default": "./dist/index.cjs"
-      }
-    }
-  },
-  "engines": {
-    "node": ">=18"
-  },
-  "files": [
-    "dist"
-  ],
-  "scripts": {
-    "build": "tsup",
-    "test": "bun test",
-    "typecheck": "tsc --noEmit"
-  },
-  "type": "module",
-  "types": "./dist/index.d.ts",
-  "peerDependencies": {
-    "@octokit/rest": ">=20"
-  },
-  "peerDependenciesMeta": {
-    "@octokit/rest": {
-      "optional": true
-    }
-  },
-  "sideEffects": false
+    "typescript": "^5.9.3"
+  }
 }
