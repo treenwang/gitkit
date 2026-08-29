@@ -121,6 +121,40 @@ export class GitRepo {
     return this.#fs.exists(rel)
   }
 
+  /** 以 Buffer 读取；用于二进制探测与不可按 UTF-8 解码的内容。 */
+  async readBuffer(rel: string): Promise<Buffer> {
+    this.assertLive()
+    return this.#fs.readBuffer(rel)
+  }
+
+  /** 删除工作区文件。commit 时 `git add -A` 会把它记录为删除。 */
+  async deleteFile(rel: string): Promise<void> {
+    this.assertLive()
+    await this.#fs.deleteFile(rel)
+  }
+
+  /**
+   * 当前改动的 diff。
+   *
+   * `paths` 强制经 PathGuard 校验 —— 调用方在物理上无法 diff 声明的 sparse 范围之外的
+   * 内容。这既是安全边界，也把 partial clone 的惰性 blob 拉取限制在已声明的目录内。
+   */
+  async getDiff(
+    opts: { paths?: string[]; against?: string; context?: number } = {},
+  ): Promise<{ patch: string; truncated: boolean }> {
+    this.assertLive()
+    const paths = opts.paths ?? this.#d.sparse.map((s) => s.path)
+    for (const p of paths) resolveWithin(this.#d.dir, p, this.#d.sparse)
+
+    const args = ['diff', `--unified=${opts.context ?? 3}`]
+    if (opts.against) args.push(`${opts.against}...HEAD`)
+    args.push('--')
+    if (paths.length > 0) args.push(...paths)
+
+    const patch = await this.git(args)
+    return { patch, truncated: false }
+  }
+
   // ------------------------------------------------------------ 状态
 
   async #gitPathExists(name: string): Promise<boolean> {

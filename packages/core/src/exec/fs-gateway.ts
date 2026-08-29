@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { dirname, relative, resolve, sep } from 'node:path'
 import { resolveWithin } from '../domain/path-guard'
 import { GitOpError, type SparsePath } from '../types'
@@ -53,6 +53,10 @@ export class FsGateway {
     const abs = await this.#safeAbs(rel, false)
     await mkdir(dirname(abs), { recursive: true })
     await writeFile(abs, content)
+  }
+
+  async deleteFile(rel: string): Promise<void> {
+    await rm(await this.#safeAbs(rel, true))
   }
 
   async exists(rel: string): Promise<boolean> {
