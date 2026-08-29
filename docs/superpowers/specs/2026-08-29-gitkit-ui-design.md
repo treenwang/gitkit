@@ -88,7 +88,7 @@ prompts/agent-skills/
 | `@aaxis/gitkit` | 服务端 | 系统 git ≥ 2.32 | 已完成。本次新增 `deleteFile` / `readBuffer` / `getDiff`，**无破坏性改动** |
 | `@aaxis/gitkit-server` | 服务端 | gitkit | 把核心暴露为 Web 标准 handler，附 Express 适配器 |
 | `@aaxis/gitkit-client` | 浏览器 | **无** | 类型化 RPC client，只用 `fetch` |
-| `@aaxis/gitkit-ui` | 浏览器 | client · React 19 · TanStack Query（peer） | hooks 与组件 |
+| `@aaxis/gitkit-ui` | 浏览器 | client（唯一 dependency）；React 19 与 TanStack Query 5 为 peer；**Radix 与 lucide 为可选 peer** | hooks 与组件 |
 
 ### 硬性约束
 
@@ -97,7 +97,8 @@ prompts/agent-skills/
    组件代码不会进入 bundle。
 3. **共享类型的唯一来源是 `@aaxis/gitkit`。** `client` 以 `import type` 复用 `Conflict`、
    `PushResult`、`HunkChoice` 等，**不产生运行时依赖**。服务端改类型 → 前端编译期报错。
-4. **`ui` 不依赖任何 UI 组件库**，不打包 CSS-in-JS，不引 Radix。见 §9。
+4. **`ui` 的唯一 `dependency` 是 `client`**；不打包任何 CSS。UI 组件库以**可选 peer** 形式使用，
+   绝不作为普通依赖 —— 理由见 §9.2。
 
 ---
 
@@ -497,36 +498,65 @@ getDiff(opts?: {
 
 ---
 
-## 9. 样式与主题
+## 9. 依赖、样式与主题
 
-**shadcn/ui 不是一个可依赖的 npm 包** —— 它是复制进消费者仓库的源码，底层是 Radix + Tailwind。
-因此本包不能 `import { Button } from 'shadcn'`。
+### 9.1 为什么不能直接依赖 shadcn
 
-采用的方案：
+**shadcn/ui 不是可安装的 npm 包** —— 它是复制进消费者仓库的源码，底层是 Radix + Tailwind。
+`npm i shadcn` 装的是 CLI 而非组件。因此"引入 shadcn"这件事在分发型组件库里不成立。
 
-1. **只使用 shadcn 的语义 token 类名** —— `bg-background`、`text-muted-foreground`、
-   `border-border`、`bg-muted/20` 等。shadcn 的主题全靠 CSS 变量，因此组件会**自动跟随消费者的
-   主题**（含暗色模式），而本包**零 UI 依赖、不打包任何 CSS、不引 Radix**。
+### 9.2 Radix 必须是 optional peer，不能是普通依赖
 
-2. **消费者需在 Tailwind v4 配置中加一行**扫描本包产物：
+若把 `radix-ui` 写进 `dependencies`，而消费者自己也装了一份，包管理器可能解析出**两份 Radix
+实例**。Radix 的组件全部依赖 React Context（`DialogContext`、`PopperContext` 等），
+**两份实例的 context 互不相通** —— 表现为弹窗打不开、焦点管理错乱、Portal 挂错位置，
+且只在特定依赖树下复现。
 
-   ```css
-   @source "../node_modules/@aaxis/gitkit-ui/dist";
-   ```
+**要避免的是"重复实例"与"样式割裂"，不是"依赖"本身。** 因此：
 
-3. **`components` 注入插槽**，可替换为消费者自己的 shadcn 组件：
+```jsonc
+{
+  "dependencies":  { "@aaxis/gitkit-client": "workspace:*" },
+  "peerDependencies": {
+    "react": "^19", "@tanstack/react-query": "^5",
+    "radix-ui": "^1", "lucide-react": "*"
+  },
+  "peerDependenciesMeta": {
+    "radix-ui":     { "optional": true },
+    "lucide-react": { "optional": true }
+  }
+}
+```
 
-   ```tsx
-   <GitkitProvider components={{ Button, Dialog, ScrollArea, Badge }}>
-   ```
+行为分三档，优先级由高到低：
 
-   不传则退化为带正确 token 类名的原生元素，仍然开箱可用且视觉一致。
+1. **消费者通过 `components` 注入了自己的组件** → 直接用他们的。
+2. **装了 Radix**（首个使用者已有 `radix-ui@^1.4.3`）→ 用 Radix 实现 Dialog / DropdownMenu /
+   Tooltip，**无障碍能力（焦点陷阱、aria、键盘导航）完整**，且只有一份实例。
+3. **都没有** → 降级为原生 `<dialog>` / `<details>`，功能可用、样式一致，交互细节稍弱。
 
-4. **开发期缺失检测**：`NODE_ENV !== 'production'` 时检查 `--background` 等 CSS 变量是否存在，
-   缺失则 `console.warn` 提示第 2 步未配置。这是本方案最容易踩的坑（忘记加 `@source` 会让组件
-   完全没有样式却不报错），必须主动提示。
+**图标不引依赖**，直接内联 SVG —— 用到的就几个，不值得为此增加约束。
 
----
+### 9.3 样式：只用语义 token，不打包 CSS
+
+组件只使用 shadcn 的语义 token 类名 —— `bg-background`、`text-muted-foreground`、
+`border-border`、`bg-muted/20` 等。shadcn 的主题全靠 CSS 变量，因此组件会**自动跟随消费者的
+主题**（含暗色模式）。
+
+**本包不打包任何 CSS。** 理由：shadcn 的设计前提就是"组件源码归你、主题由 CSS 变量统一"。
+若打包自带样式，消费者改主题时本包组件不跟随，反而成为视觉上的异类。
+
+消费者需在 Tailwind v4 配置中加一行扫描本包产物：
+
+```css
+@source "../node_modules/@aaxis/gitkit-ui/dist";
+```
+
+### 9.4 开发期缺失检测
+
+忘记加 `@source` 会导致组件**完全没有样式却不报任何错**，这是本方案最容易踩的坑。
+因此 `NODE_ENV !== 'production'` 时检测 `--background` 等 CSS 变量是否存在，缺失则
+`console.warn` 指明原因与修复方式。
 
 ## 10. 阶段划分
 
@@ -594,6 +624,7 @@ op 名称、参数、返回类型任一不一致都在编译期失败。
 | session 生命周期与 PR 状态脱节 | PR 合并后 session 仍在，用户继续编辑一个已过时的分支 | `WORKTREE_DISPOSED` → 410，UI 引导重新开始；宿主负责在 PR 合并后 `dispose()` |
 | `requireChecks` 粒度不足（目录级） | 无法表达"正文免检、catalog 等 CI" | 默认全部等 CI；提供显式 `merge: 'now'` 逃生口 |
 | shadcn token 名称随版本变化 | 组件视觉错位 | 只使用最稳定的一组核心 token；在文档中列出依赖的变量清单 |
+| Radix 出现两份实例 | 弹窗/焦点/Portal 失效，且难以复现 | 声明为 optional peer 而非 dependency（§9.2） |
 | 自动保存产生的请求量 | 服务端压力 | 800 ms 防抖 + 5 s maxWait；写入是普通文件写，成本极低 |
 | 大文件 / 大 diff | 浏览器卡顿或 OOM | `maxContentBytes` 截断 + `truncated` 标记，UI 显式降级 |
 | monorepo 迁移引入回归 | 已有 295 个测试失效 | 迁移只改路径不改逻辑；全部通过是迁移完成的判据 |
