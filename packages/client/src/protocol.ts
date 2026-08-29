@@ -7,12 +7,23 @@
  */
 import type {
   Conflict,
+  ConflictHunk,
+  ConflictSide,
   HunkChoice,
   MergeMethod,
   MergeMode,
   PullRequest,
   Resolution,
 } from '@aaxis/gitkit'
+
+/**
+ * 从核心包再导出协议里出现的类型，使浏览器侧只依赖 client 一个包
+ * 即可拿到完整类型（这些是纯类型，不产生运行时依赖）。
+ */
+export type {
+  Conflict, ConflictHunk, ConflictSide, HunkChoice,
+  MergeMethod, MergeMode, PullRequest, Resolution,
+}
 
 // ---------------------------------------------------------------- 自有类型
 

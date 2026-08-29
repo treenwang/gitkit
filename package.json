@@ -4,13 +4,17 @@
   "private": true,
   "type": "module",
   "workspaces": ["packages/*"],
-  "engines": { "bun": ">=1.2", "node": ">=18" },
+  "engines": {
+    "bun": ">=1.2",
+    "node": ">=18"
+  },
   "scripts": {
     "test": "bun test",
     "typecheck": "bun run --filter '*' typecheck",
     "build": "bun run --filter '*' build"
   },
   "devDependencies": {
+    "@happy-dom/global-registrator": "^20.11.15",
     "@types/bun": "^1.4.0",
     "@types/node": "^26.4.0",
     "tsup": "^8.5.1",
