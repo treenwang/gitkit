@@ -119,6 +119,11 @@ export class RepoManager {
         await this.#exec.run(['config', 'extensions.worktreeConfig', 'true'], {
           cwd: layout.storeDir,
         })
+        // storeDir 是共享对象库，工作区永远为空（--no-checkout）。但 clone 会把它的 HEAD
+        // 指向默认分支，而 git 据此认为该分支「已在某个 worktree 中 checkout」——于是
+        // createSession({ branch: 'main' }) 恒抛 BRANCH_IN_USE，默认分支变成不可用的。
+        // 这里没有任何东西需要 HEAD 停在一个分支上，所以让它游离。同样是幂等的。
+        await this.#detachStoreHead(layout.storeDir)
 
         const forge = cfg.forge ?? this.#buildForge(cfg, token)
         return new RepoStore({
@@ -142,6 +147,24 @@ export class RepoManager {
 
     this.#stores.set(layout.key, created)
     return created
+  }
+
+  /** 让 storeDir 的 HEAD 游离，好把每一个分支都留给 worktree。已经游离时是空操作。 */
+  async #detachStoreHead(storeDir: string): Promise<void> {
+    const head = await this.#exec
+      .run(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: storeDir })
+      .catch(() => 'HEAD')
+    if (head.trim() === 'HEAD') return
+    // 用 update-ref 而不是 `checkout --detach`：后者会把文件检出到工作区，破坏
+    // storeDir 「工作区恒为空」的不变量（--no-checkout 的全部意义）。update-ref 只动
+    // HEAD 这一个 ref，索引与工作区一概不碰。
+    const sha = await this.#exec
+      .run(['rev-parse', 'HEAD'], { cwd: storeDir })
+      .catch(() => '')
+    // 空仓库（clone 了一个没有提交的 remote）没有可指向的提交；保持原状即可，
+    // 没有提交也就没有分支会被占用。
+    if (!sha.trim()) return
+    await this.#exec.run(['update-ref', '--no-deref', 'HEAD', sha.trim()], { cwd: storeDir })
   }
 
   #buildForge(cfg: StoreConfig, token?: string): ForgeProvider | undefined {

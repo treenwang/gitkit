@@ -69,6 +69,15 @@ export class RepoStore {
     return this.#d.exec.run(['config', '--get', name], { cwd: this.storeDir })
   }
 
+  /** storeDir 自身的 HEAD，游离时为 'HEAD'。它应当始终是游离的 —— 见 RepoManager 中
+   *  clone 之后的 detach。 */
+  async currentHead(): Promise<string> {
+    const out = await this.#d.exec.run(['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: this.storeDir,
+    })
+    return out.trim()
+  }
+
   // ------------------------------------------------------- store 级操作（加锁）
 
   /** 写 refs 与对象，必须串行。 */

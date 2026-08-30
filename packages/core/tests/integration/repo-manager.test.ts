@@ -34,6 +34,26 @@ describe('RepoManager', () => {
     expect(await store.configGet('extensions.worktreeConfig')).toBe('true')
   })
 
+  test('store 的 HEAD 是游离的，不占用默认分支', async () => {
+    const m = new RepoManager({ root: repos })
+    const store = await m.store({ url: urlOf(bare) })
+    // storeDir 只是共享对象库（--no-checkout，工作区为空）。让它的 HEAD 停在 main 上，
+    // 会让 git 认为 main 已被 checkout，于是没有任何 session 能开在默认分支上。
+    expect(await store.currentHead()).toBe('HEAD')
+  })
+
+  test('默认分支可以开 session（HEAD 游离的直接后果）', async () => {
+    const m = new RepoManager({ root: repos })
+    const store = await m.store({ url: urlOf(bare) })
+    const repo = await store.createSession({
+      branch: 'main', branchMode: 'reuse',
+      author: { name: 'T', email: 't@x' },
+      sparsePaths: [{ path: 'docs' }],
+    })
+    expect(existsSync(join(repo.dir, 'docs', 'a.md'))).toBe(true)
+    await repo.dispose()
+  })
+
   test('保留 remote.origin.fetch refspec（证明未用 --bare）', async () => {
     const m = new RepoManager({ root: repos })
     const store = await m.store({ url: urlOf(bare) })
