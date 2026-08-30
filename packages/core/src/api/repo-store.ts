@@ -18,6 +18,9 @@ export type SessionConfig = {
   sparsePaths?: SparsePathInput[]
   author: { name: string; email: string }
   retryOnReject?: boolean
+  /** 本次调用者的凭据。不给则退回建 store 时那个（单租户用法）。共享一个 store 的多个
+   *  调用者各自带自己的 token，store 的身份与凭据无关。 */
+  token?: string
 }
 
 export type SessionInfo = {
@@ -69,6 +72,14 @@ export class RepoStore {
     return this.#d.exec.run(['config', '--get', name], { cwd: this.storeDir })
   }
 
+  /** 仓库默认分支的短名（'main'、'master'、…）。判定不出来时返回 null —— 交给调用方决定
+   *  是退回一个约定值还是报错，本包不猜。 */
+  async defaultBranch(): Promise<string | null> {
+    const base = await this.#defaultBase()
+    if (base === 'HEAD') return null
+    return base.replace(/^origin\//, '')
+  }
+
   /** storeDir 自身的 HEAD，游离时为 'HEAD'。它应当始终是游离的 —— 见 RepoManager 中
    *  clone 之后的 detach。 */
   async currentHead(): Promise<string> {
@@ -80,13 +91,15 @@ export class RepoStore {
 
   // ------------------------------------------------------- store 级操作（加锁）
 
-  /** 写 refs 与对象，必须串行。 */
-  async fetch(refspec?: string): Promise<void> {
+  /** 写 refs 与对象，必须串行。
+   *  opts.token 是「本次调用者」的凭据；不给则退回建 store 时那个（单租户用法）。 */
+  async fetch(refspec?: string, opts: { token?: string } = {}): Promise<void> {
     this.#touch()
+    const token = opts.token ?? this.#d.token
     await this.#d.mutex.run(this.key, () =>
       this.#d.exec.run(
         refspec ? ['fetch', 'origin', refspec] : ['fetch', '--prune', 'origin'],
-        { cwd: this.storeDir, token: this.#d.token, phase: 'fetch' },
+        { cwd: this.storeDir, ...(token ? { token } : {}), phase: 'fetch' },
       ),
     )
   }
@@ -129,8 +142,10 @@ export class RepoStore {
     const sparse = normalizeSparsePaths(cfg.sparsePaths)
     const mode = cfg.branchMode ?? 'createOrReuse'
     const dir = worktreeDirFor(this.worktreeRoot, `s-${randomBytes(6).toString('hex')}`)
+    // 本次调用者的凭据，贯穿 fetch / worktree / checkout 三个会碰网络的阶段。
+    const token = cfg.token ?? this.#d.token
 
-    await this.fetch()
+    await this.fetch(undefined, ...(cfg.token ? [{ token: cfg.token }] as const : []))
 
     const created = await this.#d.mutex.run(this.key, async () => {
       if ((await this.#checkedOutBranches()).has(cfg.branch)) {
@@ -162,7 +177,7 @@ export class RepoStore {
         addArgs.push('--no-track', '-b', cfg.branch, dir, base)
       }
       await this.#d.exec.run(addArgs, {
-        cwd: this.storeDir, token: this.#d.token, phase: 'worktree',
+        cwd: this.storeDir, ...(token ? { token } : {}), phase: 'worktree',
       })
       return dir
     })
@@ -176,7 +191,7 @@ export class RepoStore {
         )
       }
       await this.#d.exec.run(['checkout'], {
-        cwd: created, token: this.#d.token, phase: 'checkout',
+        cwd: created, ...(token ? { token } : {}), phase: 'checkout',
       })
       // 必须用 --worktree：不带该选项会写共享的 .git/config，并发创建 session
       // 时会争抢 config.lock，而且所有 session 会共用同一个 author。

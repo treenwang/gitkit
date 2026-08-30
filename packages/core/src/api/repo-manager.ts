@@ -36,9 +36,17 @@ export type GcReport = { removed: string[]; skippedActive: string[] }
 const MIN_GIT = { major: 2, minor: 32, patch: 0 }
 
 /** store 是共享对象库，同一 URL 只能有一份；配置不一致必须报错而非静默沿用。 */
-function storeSignature(cfg: StoreConfig, fallbackToken?: string): string {
+/** 决定「两次 store() 要不要共用一份磁盘」的配置。
+ *
+ *  token 刻意不在其中：共享对象库天生是多租户的，dedup 的意义就是多个调用者共用一份，而把某
+ *  一个调用者的凭据算进 store 的身份，会让第二个调用者永远打不开同一个仓库。凭据按调用传入
+ *  （见 fetch / createSession 的 token 参数）。
+ *
+ *  由此而来的安全边界要说清楚：store 只知道「哪个仓库」，不知道「谁」。一旦一个有权限的调用者
+ *  把仓库拉了下来，磁盘上的内容对本进程内的任何调用者都是可读的 —— 判断某个人能不能看某个仓库
+ *  是调用方的责任，本包不做也无从做起。 */
+function storeSignature(cfg: StoreConfig): string {
   return JSON.stringify({
-    token: cfg.auth?.token ?? fallbackToken ?? null,
     depth: cfg.depth ?? null,
     filter: cfg.filter ?? 'blob:none',
     github: cfg.github ? { baseUrl: cfg.github.baseUrl ?? null, token: cfg.github.token ?? null } : null,
@@ -88,7 +96,7 @@ export class RepoManager {
     await this.#ensurePreflight()
     const layout = planLayout(this.#cfg.root, cfg.url)
 
-    const signature = storeSignature(cfg, this.#cfg.auth?.token)
+    const signature = storeSignature(cfg)
     const existing = this.#stores.get(layout.key)
     if (existing) {
       const prev = this.#signatures.get(layout.key)

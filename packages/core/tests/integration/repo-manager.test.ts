@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { existsSync, readdirSync } from 'node:fs'
+import { chmodSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { RepoManager } from '../../src/api/repo-manager'
 import type { GitOpError } from '../../src/types'
@@ -39,7 +39,9 @@ describe('RepoManager', () => {
     const store = await m.store({ url: urlOf(bare) })
     // storeDir 只是共享对象库（--no-checkout，工作区为空）。让它的 HEAD 停在 main 上，
     // 会让 git 认为 main 已被 checkout，于是没有任何 session 能开在默认分支上。
-    expect(await store.currentHead()).toBe('HEAD')
+    expect(await store.configGet('remote.origin.fetch')).toBeTruthy()
+    const head = await store.currentHead()
+    expect(head).toBe('HEAD')
   })
 
   test('默认分支可以开 session（HEAD 游离的直接后果）', async () => {
@@ -52,6 +54,77 @@ describe('RepoManager', () => {
     })
     expect(existsSync(join(repo.dir, 'docs', 'a.md'))).toBe(true)
     await repo.dispose()
+  })
+
+  test('同一仓库、不同调用者的 token，共用同一个 store', async () => {
+    // 共享对象库天生是多租户的：dedup 的全部意义就是多个调用者共用一份。把某一个调用者的
+    // 凭据算进 store 的身份，等于让第二个用户永远无法打开同一个仓库。
+    // 访问控制属于调用方（它知道「谁」），不属于这里（它只知道「哪个仓库」）。
+    const m = new RepoManager({ root: repos })
+    const first = await m.store({ url: urlOf(bare), auth: { token: 'token-of-user-a' } })
+    const second = await m.store({ url: urlOf(bare), auth: { token: 'token-of-user-b' } })
+    expect(second).toBe(first)
+  })
+
+  test('配置上的实质差异仍然被拒绝', async () => {
+    const m = new RepoManager({ root: repos })
+    await m.store({ url: urlOf(bare) })
+    // filter 决定磁盘上的对象集合，两个调用者不能各要一份
+    await expect(m.store({ url: urlOf(bare), filter: false })).rejects.toMatchObject({
+      code: 'INVALID_ARGUMENT',
+    })
+  })
+
+  /** 一个记录 argv 的 git 包装脚本。token 在日志与错误信息里都被脱敏，所以想验证「这次调用
+   *  确实带上了这个 token」，只能看真正交给 git 的参数。 */
+  function recordingGit(): { gitPath: string; argvOf: () => string[][] } {
+    const bin = join(root, 'git-spy.sh')
+    const logFile = join(root, 'git-spy.log')
+    writeFileSync(bin, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(logFile)}\nexec git "$@"\n`)
+    chmodSync(bin, 0o755)
+    return {
+      gitPath: bin,
+      argvOf: () =>
+        (existsSync(logFile) ? readFileSync(logFile, 'utf8') : '')
+          .split('\n').filter(Boolean).map((l) => l.split(' ')),
+    }
+  }
+
+  const hasHeaderFor = (argv: string[][], token: string) => {
+    const basic = Buffer.from(`x-access-token:${token}`).toString('base64')
+    return argv.some((a) => a.some((w) => w.includes(basic)))
+  }
+
+  test('fetch 用本次调用者的 token，而不是建 store 时那个', async () => {
+    const spy = recordingGit()
+    const m = new RepoManager({ root: repos, gitPath: spy.gitPath })
+    const store = await m.store({ url: urlOf(bare), auth: { token: 'store-token' } })
+    await store.fetch(undefined, { token: 'caller-token' })
+    const argv = spy.argvOf()
+    const fetches = argv.filter((a) => a.includes('fetch'))
+    expect(fetches.length).toBeGreaterThan(0)
+    expect(hasHeaderFor(fetches, 'caller-token')).toBe(true)
+    expect(hasHeaderFor(fetches, 'store-token')).toBe(false)
+  })
+
+  test('createSession 用本次调用者的 token', async () => {
+    const spy = recordingGit()
+    const m = new RepoManager({ root: repos, gitPath: spy.gitPath })
+    const store = await m.store({ url: urlOf(bare), auth: { token: 'store-token' } })
+    const repo = await store.createSession({
+      branch: 'main', branchMode: 'reuse', token: 'caller-token',
+      author: { name: 'T', email: 't@x' }, sparsePaths: [{ path: 'docs' }],
+    })
+    expect(existsSync(join(repo.dir, 'docs', 'a.md'))).toBe(true)
+    const checkouts = spy.argvOf().filter((a) => a.includes('checkout') || a.includes('worktree'))
+    expect(hasHeaderFor(checkouts, 'caller-token')).toBe(true)
+    await repo.dispose()
+  })
+
+  test('defaultBranch 给出默认分支的短名', async () => {
+    const m = new RepoManager({ root: repos })
+    const store = await m.store({ url: urlOf(bare) })
+    expect(await store.defaultBranch()).toBe('main')
   })
 
   test('保留 remote.origin.fetch refspec（证明未用 --bare）', async () => {
