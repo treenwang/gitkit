@@ -1,7 +1,7 @@
-import { GitOpError } from '@aaxis/gitkit'
-import type { WireError, WireErrorCode } from '@aaxis/gitkit-client'
+import { GitOpError } from '@treenwang/gitkit'
+import type { WireError, WireErrorCode } from '@treenwang/gitkit-client'
 
-/** 传输层自有的失败，核心包里没有对应概念。 */
+/** Failures the transport owns, with no counterpart in the core package. */
 export class TransportError extends Error {
   constructor(
     readonly code: Extract<
@@ -30,8 +30,9 @@ const STATUS: Partial<Record<WireErrorCode, number>> = {
   MERGE_IN_PROGRESS: 409,
   DIRTY_WORKTREE: 409,
   WORKTREE_DISPOSED: 410,
-  // 上游 git 认证失败，不是浏览器用户未登录。
-  // 映射成 401 会让前端拦截器误判为会话过期而触发重新登录。
+  // An upstream git auth failure, not a browser user who is signed out.
+  // Mapping it to 401 would make frontend interceptors read it as an expired
+  // session and start a re-login.
   AUTH_FAILED: 502,
   NETWORK: 504,
   TIMEOUT: 504,
@@ -48,9 +49,10 @@ export function statusFor(code: WireErrorCode): number {
 }
 
 /**
- * 把任意异常转成可安全发给浏览器的形状。
+ * Turn any exception into a shape that is safe to send to a browser.
  *
- * detail 与 command 含服务端文件系统绝对路径，默认一律剥除。
+ * detail and command hold absolute server paths, so they are stripped by
+ * default.
  */
 export function toWireError(
   err: unknown,

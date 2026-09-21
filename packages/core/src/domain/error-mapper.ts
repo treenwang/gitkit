@@ -1,8 +1,8 @@
 import type { GitErrorCode } from '../types'
 
 /**
- * stderr 模式 → 错误码。顺序敏感：先匹配者胜。
- * 匹配不中一律返回 UNKNOWN —— 猜错的错误码比没有错误码更有害。
+ * stderr patterns to error codes. Order matters: first match wins.
+ * Anything unmatched returns UNKNOWN - a wrong code is worse than no code.
  */
 const RULES: Array<[RegExp, GitErrorCode]> = [
   [/authentication failed|invalid username or password|could not read username|returned error: 40[13]/i, 'AUTH_FAILED'],

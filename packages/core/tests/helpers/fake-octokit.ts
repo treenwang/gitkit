@@ -11,7 +11,7 @@ export type Call = { route: string; params: Record<string, unknown> }
 
 type Handler = (params: Record<string, unknown>) => { status?: number; data?: unknown }
 
-/** 忠实还原 octokit 的 request/graphql 行为（含以 status 字段抛错）。 */
+/** Reproduces octokit's request/graphql behaviour faithfully, including throwing with a status field. */
 export class FakeOctokit implements OctokitLike {
   readonly calls: Call[] = []
   readonly graphqlCalls: Array<{ query: string; vars: Record<string, unknown> }> = []
@@ -31,7 +31,7 @@ export class FakeOctokit implements OctokitLike {
   async request(route: string, params: Record<string, unknown> = {}) {
     this.calls.push({ route, params })
     const handler = this.#routes.get(route)
-    if (!handler) throw new HttpError(404, `未注册的路由: ${route}`)
+    if (!handler) throw new HttpError(404, `route not registered: ${route}`)
     const r = handler(params)
     return { status: r.status ?? 200, data: r.data }
   }

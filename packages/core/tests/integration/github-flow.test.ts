@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { join } from 'node:path'
 import { RepoManager } from '../../src/api/repo-manager'
 import type { RepoStore } from '../../src/api/repo-store'
@@ -35,7 +35,7 @@ const DOCS_FREE = [{ path: 'docs', requireChecks: false }]
 const DOCS_CHECKED = [{ path: 'docs', requireChecks: true }]
 
 describe('push + createPR', () => {
-  test('建 PR 但不合并（merge: false）', async () => {
+  test('opens a pull request without merging, with merge: false', async () => {
     const store = await makeStore(fake)
     const r = await store.publish({
       branch: 'feat/g1', sparsePaths: DOCS_FREE, author: AUTHOR,
@@ -49,7 +49,7 @@ describe('push + createPR', () => {
     expect(fake.calls.some((c) => c.route.includes('/merge'))).toBe(false)
   })
 
-  test('head 默认取当前分支', async () => {
+  test('head defaults to the current branch', async () => {
     const store = await makeStore(fake)
     await store.publish({
       branch: 'feat/g2', sparsePaths: DOCS_FREE, author: AUTHOR,
@@ -60,8 +60,8 @@ describe('push + createPR', () => {
   })
 })
 
-describe("merge 模式推导（merge: 'auto'）", () => {
-  test('只改 requireChecks: false 的路径 → 立即合并', async () => {
+describe("deriving the merge mode with merge: 'auto'", () => {
+  test('changing only requireChecks: false paths merges right away', async () => {
     const store = await makeStore(fake)
     const r = await store.publish({
       branch: 'feat/g3', sparsePaths: DOCS_FREE, author: AUTHOR,
@@ -75,7 +75,7 @@ describe("merge 模式推导（merge: 'auto'）", () => {
     expect(fake.graphqlCalls).toHaveLength(0)
   })
 
-  test('改了 requireChecks: true 的路径 → 等 CI', async () => {
+  test('touching a requireChecks: true path waits for CI', async () => {
     const store = await makeStore(fake)
     const r = await store.publish({
       branch: 'feat/g4', sparsePaths: DOCS_CHECKED, author: AUTHOR,
@@ -88,7 +88,7 @@ describe("merge 模式推导（merge: 'auto'）", () => {
     expect(fake.graphqlCalls[0]!.vars).toMatchObject({ mergeMethod: 'SQUASH' })
   })
 
-  test('混合路径取最保守 → 等 CI', async () => {
+  test('mixed paths take the conservative answer and wait for CI', async () => {
     const store = await makeStore(fake)
     const r = await store.publish({
       branch: 'feat/g5',
@@ -102,7 +102,7 @@ describe("merge 模式推导（merge: 'auto'）", () => {
     expect(r.autoMerge?.ok === true && r.autoMerge.scheduled).toBe(true)
   })
 
-  test('全量模式（未声明 sparsePaths）→ 等 CI', async () => {
+  test('full-checkout mode, with no sparsePaths declared, waits for CI', async () => {
     const store = await makeStore(fake)
     const r = await store.publish({
       branch: 'feat/g6', author: AUTHOR,
@@ -113,7 +113,7 @@ describe("merge 模式推导（merge: 'auto'）", () => {
     expect(r.autoMerge?.ok === true && r.autoMerge.scheduled).toBe(true)
   })
 
-  test("显式 merge: 'now' 覆盖推导，且不额外做 diff", async () => {
+  test("an explicit merge: 'now' overrides the derivation and skips the extra diff", async () => {
     const store = await makeStore(fake)
     const r = await store.publish({
       branch: 'feat/g7', sparsePaths: DOCS_CHECKED, author: AUTHOR,
@@ -124,7 +124,7 @@ describe("merge 模式推导（merge: 'auto'）", () => {
     expect(r.autoMerge).toEqual({ ok: true, merged: true, scheduled: false })
   })
 
-  test('method 可指定', async () => {
+  test('method can be specified', async () => {
     const store = await makeStore(fake)
     await store.publish({
       branch: 'feat/g8', sparsePaths: DOCS_FREE, author: AUTHOR,
@@ -136,8 +136,8 @@ describe("merge 模式推导（merge: 'auto'）", () => {
   })
 })
 
-describe('auto-merge 失败不影响 PR 已创建这一事实', () => {
-  test('405 被保护规则挡住时仍返回 ok: true 与 pr', async () => {
+describe('a failed auto-merge does not change the fact that the PR exists', () => {
+  test('blocked by protection rules with 405 still returns ok: true and the pr', async () => {
     const blocked = baseFake().on(
       'PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge',
       () => { throw new HttpError(405, 'Pull Request is not mergeable') },
@@ -155,7 +155,7 @@ describe('auto-merge 失败不影响 PR 已创建这一事实', () => {
     if (!r.autoMerge!.ok) expect(r.autoMerge!.reason).toBe('blocked_by_checks')
   })
 
-  test('仓库未开 auto-merge 时仍返回 ok: true 与 pr', async () => {
+  test('a repository without auto-merge still returns ok: true and the pr', async () => {
     const notAllowed = baseFake().onGraphql(() => {
       throw new Error('Auto-merge is not allowed for this repository')
     })
@@ -172,8 +172,8 @@ describe('auto-merge 失败不影响 PR 已创建这一事实', () => {
   })
 })
 
-describe('push 失败时不建 PR', () => {
-  test('被拒且冲突时返回 conflict，未调用任何 GitHub API', async () => {
+describe('no pull request is opened when the push fails', () => {
+  test('a rejected, conflicting push returns conflict and calls no GitHub API', async () => {
     const store = await makeStore(fake)
     await store.publish({
       branch: 'feat/g11', sparsePaths: DOCS_FREE, author: AUTHOR,
@@ -194,15 +194,15 @@ describe('push 失败时不建 PR', () => {
   })
 })
 
-describe('配置校验', () => {
-  test('启用 github 但没有任何 token 时抛 INVALID_ARGUMENT', async () => {
+describe('configuration validation', () => {
+  test('enabling github with no token at all throws INVALID_ARGUMENT', async () => {
     const code = await new RepoManager({ root: join(root, 'repos') })
       .store({ url: urlOf(bare), github: {} })
       .then(() => 'NO_THROW', (e: GitOpError) => e.code)
     expect(code).toBe('INVALID_ARGUMENT')
   })
 
-  test('github.token 省略时复用 auth.token', async () => {
+  test('omitting github.token reuses auth.token', async () => {
     const store = await new RepoManager({
       root: join(root, 'repos'), auth: { token: 'shared' },
     }).store({ url: urlOf(bare), github: { octokit: fake } })

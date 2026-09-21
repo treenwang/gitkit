@@ -1,20 +1,20 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
-import { GitkitClient, GitkitClientError } from '@aaxis/gitkit-client'
+import { GitkitClient, GitkitClientError } from '@treenwang/gitkit-client'
 import { GitkitProvider } from '../src/context'
 import { useFile } from '../src/hooks/use-file'
 
 type Call = { op: string; params: any; keepalive?: boolean }
 
-/** 直接替换 client.call，比打桩 fetch 更贴近 hook 的实际依赖面。 */
+/** Replacing client.call directly sits closer to what the hook actually depends on than stubbing fetch. */
 function fakeClient(handlers: Record<string, (p: any) => any>, calls: Call[] = []) {
   const c = new GitkitClient({ baseUrl: '/g', sessionId: 'sess_1' })
   ;(c as any).call = async (op: string, params: any, opts: any = {}) => {
     calls.push({ op, params, keepalive: opts.keepalive })
     const h = handlers[op]
-    if (!h) throw new Error(`未打桩的 op: ${op}`)
+    if (!h) throw new Error(`op not stubbed: ${op}`)
     return h(params)
   }
   return c
@@ -35,8 +35,8 @@ afterEach(() => { document.body.innerHTML = '' })
 
 const READ_OK = { binary: false, content: 'hello', etag: 'e1', size: 5, truncated: false }
 
-describe('加载', () => {
-  test('加载文本文件后填充内容与 etag', async () => {
+describe('loading', () => {
+  test('fills in content and etag after loading a text file', async () => {
     const client = fakeClient({ 'files.read': () => READ_OK }, calls)
     const { result } = renderHook(() => useFile('docs/a.md'), { wrapper: wrapper(client) })
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -46,7 +46,7 @@ describe('加载', () => {
     expect(result.current.saveState).toBe('clean')
   })
 
-  test('二进制文件不给 content', async () => {
+  test('withholds content for a binary file', async () => {
     const client = fakeClient({ 'files.read': () => ({ binary: true, size: 42 }) }, calls)
     const { result } = renderHook(() => useFile('docs/x.bin'), { wrapper: wrapper(client) })
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -55,16 +55,16 @@ describe('加载', () => {
     expect(result.current.size).toBe(42)
   })
 
-  test('加载失败暴露 loadError', async () => {
+  test('exposes loadError when loading fails', async () => {
     const client = fakeClient({
-      'files.read': () => { throw new GitkitClientError(400, { code: 'PATH_OUTSIDE_SPARSE', message: '越界' }) },
+      'files.read': () => { throw new GitkitClientError(400, { code: 'PATH_OUTSIDE_SPARSE', message: 'out of range' }) },
     }, calls)
     const { result } = renderHook(() => useFile('src/x.ts'), { wrapper: wrapper(client) })
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect((result.current.loadError as GitkitClientError).code).toBe('PATH_OUTSIDE_SPARSE')
   })
 
-  test('truncated 透传', async () => {
+  test('passes truncated through', async () => {
     const client = fakeClient({
       'files.read': () => ({ ...READ_OK, truncated: true, size: 999999 }),
     }, calls)
@@ -74,7 +74,7 @@ describe('加载', () => {
   })
 })
 
-describe('自动保存状态机', () => {
+describe('the autosave state machine', () => {
   async function mounted(opts = {}) {
     const client = fakeClient({
       'files.read': () => READ_OK,
@@ -85,14 +85,14 @@ describe('自动保存状态机', () => {
     return r
   }
 
-  test('输入后立刻变 dirty，尚未保存', async () => {
+  test('goes dirty as soon as you type, before any save', async () => {
     const { result } = await mounted({ debounceMs: 50 })
     act(() => { result.current.setContent('x') })
     expect(result.current.saveState).toBe('dirty')
     expect(calls.filter((c) => c.op === 'files.write')).toHaveLength(0)
   })
 
-  test('防抖到期后保存，状态转为 saved 并更新 etag', async () => {
+  test('saves once the debounce elapses, moving to saved and updating the etag', async () => {
     const { result } = await mounted({ debounceMs: 30 })
     act(() => { result.current.setContent('changed') })
     await waitFor(() => expect(result.current.saveState).toBe('saved'))
@@ -101,7 +101,7 @@ describe('自动保存状态机', () => {
     expect(result.current.etag).toBe('e2')
   })
 
-  test('连续输入只保存一次（防抖生效）', async () => {
+  test('typing continuously saves only once, so the debounce works', async () => {
     const { result } = await mounted({ debounceMs: 40 })
     act(() => { result.current.setContent('a') })
     await act(async () => { await tick(10) })
@@ -114,17 +114,17 @@ describe('自动保存状态机', () => {
     expect(writes[0]!.params.content).toBe('abc')
   })
 
-  test('maxWait：持续输入时仍会按上限强制落盘', async () => {
+  test('maxWait still forces a write while typing continues', async () => {
     const { result } = await mounted({ debounceMs: 1000, maxWaitMs: 60 })
     for (let i = 0; i < 6; i += 1) {
       act(() => { result.current.setContent(`v${i}`) })
       await act(async () => { await tick(15) })
     }
-    // 防抖是 1000ms，若无 maxWait 则一次都不会保存
+    // The debounce is 1000ms, so without maxWait nothing would ever be saved
     await waitFor(() => expect(calls.filter((c) => c.op === 'files.write').length).toBeGreaterThan(0))
   })
 
-  test('save() 立即保存，不等防抖', async () => {
+  test('save() writes immediately, without waiting for the debounce', async () => {
     const { result } = await mounted({ debounceMs: 10_000 })
     act(() => { result.current.setContent('now') })
     await act(async () => { await result.current.save() })
@@ -132,7 +132,7 @@ describe('自动保存状态机', () => {
     expect(result.current.saveState).toBe('saved')
   })
 
-  test('autoSave: false 时输入不触发保存', async () => {
+  test('typing triggers no save when autoSave is false', async () => {
     const { result } = await mounted({ autoSave: false, debounceMs: 10 })
     act(() => { result.current.setContent('x') })
     await act(async () => { await tick(60) })
@@ -140,12 +140,12 @@ describe('自动保存状态机', () => {
     expect(result.current.saveState).toBe('dirty')
   })
 
-  test('保存失败转为 error 且保留本地内容，可重试', async () => {
+  test('a failed save moves to error, keeps the local content, and can be retried', async () => {
     let fail = true
     const client = fakeClient({
       'files.read': () => READ_OK,
       'files.write': () => {
-        if (fail) { fail = false; throw new GitkitClientError(504, { code: 'NETWORK', message: '断网' }) }
+        if (fail) { fail = false; throw new GitkitClientError(504, { code: 'NETWORK', message: 'offline' }) }
         return { etag: 'e9' }
       },
     }, calls)
@@ -162,7 +162,7 @@ describe('自动保存状态机', () => {
     expect(result.current.etag).toBe('e9')
   })
 
-  test('切换 path 时重置状态并加载新文件', async () => {
+  test('switching path resets the state and loads the new file', async () => {
     const client = fakeClient({
       'files.read': (p: any) => ({
         binary: false, content: `body of ${p.path}`, etag: `etag-${p.path}`,
@@ -183,7 +183,7 @@ describe('自动保存状态机', () => {
     expect(result.current.etag).toBe('etag-docs/b.md')
   })
 
-  test('切换文件前把未落盘的改动保存掉，不静默丢弃', async () => {
+  test('flushes unsaved changes before switching files instead of discarding them silently', async () => {
     const client = fakeClient({
       'files.read': (p: any) => ({
         binary: false, content: `body of ${p.path}`, etag: `etag-${p.path}`,
@@ -200,13 +200,13 @@ describe('自动保存状态机', () => {
     rerender({ path: 'docs/b.md' })
     await waitFor(() => expect(calls.some((c) => c.op === 'files.write')).toBe(true))
     const w = calls.find((c) => c.op === 'files.write')!
-    // 保存的必须是**旧文件**的路径与内容
+    // What gets saved has to be the **previous** file's path and content
     expect(w.params.path).toBe('docs/a.md')
     expect(w.params.content).toBe('unsaved edit')
     expect(w.params.baseEtag).toBe('etag-docs/a.md')
   })
 
-  test('没有待保存改动时切换文件不产生写入', async () => {
+  test('switching files writes nothing when there is nothing pending', async () => {
     const client = fakeClient({
       'files.read': (p: any) => ({
         binary: false, content: 'x', etag: 'e', size: 1, truncated: false,
@@ -221,7 +221,7 @@ describe('自动保存状态机', () => {
     expect(calls.filter((c) => c.op === 'files.write')).toHaveLength(0)
   })
 
-  test('极短防抖下保存的是最新内容，不是上一版', async () => {
+  test('with a very short debounce it saves the latest content, not the previous version', async () => {
     const client = fakeClient({
       'files.read': () => READ_OK,
       'files.write': () => ({ etag: 'e2' }),
@@ -235,7 +235,7 @@ describe('自动保存状态机', () => {
     expect(calls.find((c) => c.op === 'files.write')!.params.content).toBe('final')
   })
 
-  test('页面隐藏时用 keepalive 抢救未落盘的改动', async () => {
+  test('rescues unsaved changes with keepalive when the page is hidden', async () => {
     const { result } = await mounted({ debounceMs: 10_000 })
     act(() => { result.current.setContent('rescue me') })
     Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
@@ -250,14 +250,14 @@ describe('自动保存状态机', () => {
   })
 })
 
-describe('etag 冲突的三条分支', () => {
+describe('the three ways out of an etag conflict', () => {
   function staleClient() {
     return fakeClient({
       'files.read': () => READ_OK,
       'files.write': (p: any) => {
         if (p.baseEtag === 'e1') {
           throw new GitkitClientError(409, {
-            code: 'STALE_ETAG', message: '文件已被改动',
+            code: 'STALE_ETAG', message: 'the file changed',
             current: { content: 'server wins', etag: 'e-server' },
           })
         }
@@ -275,7 +275,7 @@ describe('etag 冲突的三条分支', () => {
     return r
   }
 
-  test('冲突时暴露服务端内容与本地内容，状态为 error', async () => {
+  test('exposes both the server content and the local content, in the error state', async () => {
     const { result } = await conflicted()
     expect(result.current.saveState).toBe('error')
     expect(result.current.staleConflict).toEqual({
@@ -283,11 +283,11 @@ describe('etag 冲突的三条分支', () => {
       serverEtag: 'e-server',
       localContent: 'my edit',
     })
-    // 本地内容仍在编辑器里，没有被吞掉
+    // The local content is still in the editor, not swallowed
     expect(result.current.content).toBe('my edit')
   })
 
-  test('分支一：覆盖 —— 不带 baseEtag 强制写入', async () => {
+  test('first way out: overwrite - force the write with no baseEtag', async () => {
     const { result } = await conflicted()
     await act(async () => { await result.current.overwriteRemote() })
     const forced = calls.filter((c) => c.op === 'files.write').at(-1)!
@@ -297,7 +297,7 @@ describe('etag 冲突的三条分支', () => {
     expect(result.current.etag).toBe('e-forced')
   })
 
-  test('分支二：放弃 —— 采用服务端内容与 etag', async () => {
+  test('second way out: discard - take the server\'s content and etag', async () => {
     const { result } = await conflicted()
     act(() => { result.current.discardLocal() })
     expect(result.current.content).toBe('server wins')
@@ -306,13 +306,13 @@ describe('etag 冲突的三条分支', () => {
     expect(result.current.saveState).toBe('clean')
   })
 
-  test('分支三：查看差异 —— 两侧内容都在，由调用方渲染', async () => {
+  test('third way out: compare - both sides are present for the caller to render', async () => {
     const { result } = await conflicted()
     const c = result.current.staleConflict!
     expect(c.localContent).not.toBe(c.serverContent)
   })
 
-  test('放弃后再编辑用新 etag 保存，不再冲突', async () => {
+  test('editing again after a discard saves with the new etag and does not conflict', async () => {
     const { result } = await conflicted()
     act(() => { result.current.discardLocal() })
     act(() => { result.current.setContent('after discard') })

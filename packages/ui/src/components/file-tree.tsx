@@ -1,5 +1,5 @@
 import { createElement, Fragment } from 'react'
-import type { FileEntry } from '@aaxis/gitkit-client'
+import type { FileEntry } from '@treenwang/gitkit-client'
 import { useFileTree } from '../hooks/queries'
 import { Badge, cx, Muted, statusClass, statusLabel } from './primitives'
 
@@ -13,14 +13,14 @@ export type FileTreeProps = {
 export function FileTree(props: FileTreeProps): React.ReactElement {
   const query = useFileTree(props.dir)
 
-  if (query.isLoading) return createElement(Muted, null, '正在读取文件…')
+  if (query.isLoading) return createElement(Muted, null, 'Loading files...')
   if (query.error) {
     return createElement(Muted, { className: 'text-destructive' },
-      `无法读取文件列表：${(query.error as Error).message}`)
+      `Could not read the file list: ${(query.error as Error).message}`)
   }
 
   const entries = query.data ?? []
-  if (entries.length === 0) return createElement(Muted, null, '没有文件')
+  if (entries.length === 0) return createElement(Muted, null, 'No files')
 
   return createElement(
     'ul',

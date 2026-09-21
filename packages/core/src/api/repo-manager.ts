@@ -15,7 +15,7 @@ export type ManagerConfig = {
   gitPath?: string
   timeout?: number
   onProgress?: (e: ProgressEvent) => void
-  /** 仅供测试覆盖；生产环境不要传。 */
+  /** For tests to override; never pass this in production. */
   minGitVersion?: { major: number; minor: number; patch: number }
 }
 
@@ -23,11 +23,11 @@ export type StoreConfig = {
   url: string
   auth?: { token: string }
   depth?: number
-  /** partial clone filter，默认 'blob:none'；传 false 关闭。 */
+  /** Partial clone filter, 'blob:none' by default; pass false to disable. */
   filter?: string | false
-  /** 启用 GitHub PR 功能。token 省略时复用 git 的 token。 */
+  /** Enable GitHub pull requests. With the token omitted, git's token is reused. */
   github?: Omit<GitHubProviderConfig, 'url' | 'token'> & { token?: string }
-  /** 直接注入自定义 ForgeProvider；优先于 github。 */
+  /** Inject a custom ForgeProvider directly; takes precedence over github. */
   forge?: ForgeProvider
 }
 
@@ -35,16 +35,20 @@ export type GcReport = { removed: string[]; skippedActive: string[] }
 
 const MIN_GIT = { major: 2, minor: 32, patch: 0 }
 
-/** store 是共享对象库，同一 URL 只能有一份；配置不一致必须报错而非静默沿用。 */
-/** 决定「两次 store() 要不要共用一份磁盘」的配置。
+/** A store is a shared object database: one per URL. A configuration mismatch must fail rather than silently reuse the first one. */
+/** The configuration that decides whether two store() calls share one copy on disk.
  *
- *  token 刻意不在其中：共享对象库天生是多租户的，dedup 的意义就是多个调用者共用一份，而把某
- *  一个调用者的凭据算进 store 的身份，会让第二个调用者永远打不开同一个仓库。凭据按调用传入
- *  （见 fetch / createSession 的 token 参数）。
+ *  The token is deliberately not part of it. A shared object database is
+ *  inherently multi-tenant - dedup exists precisely so several callers share one
+ *  copy - and folding one caller's credentials into the store's identity would
+ *  lock every other caller out of the same repository forever. Credentials are
+ *  passed per call instead (see the token parameters on fetch and createSession).
  *
- *  由此而来的安全边界要说清楚：store 只知道「哪个仓库」，不知道「谁」。一旦一个有权限的调用者
- *  把仓库拉了下来，磁盘上的内容对本进程内的任何调用者都是可读的 —— 判断某个人能不能看某个仓库
- *  是调用方的责任，本包不做也无从做起。 */
+ *  The security boundary that follows is worth stating plainly: a store knows
+ *  *which repository*, never *who*. Once one authorized caller has fetched it,
+ *  the contents on disk are readable by any caller in this process. Deciding
+ *  whether a given person may see a given repository is the caller's job; this
+ *  package neither does it nor could. */
 function storeSignature(cfg: StoreConfig): string {
   return JSON.stringify({
     depth: cfg.depth ?? null,
@@ -79,7 +83,7 @@ export class RepoManager {
       if (!ok) {
         throw new GitOpError(
           'GIT_VERSION_TOO_OLD',
-          `需要 git >= ${min.major}.${min.minor}，当前为 ${v.raw}`,
+          `git >= ${min.major}.${min.minor} is required, found ${v.raw}`,
           { detail: v.raw },
         )
       }
@@ -103,8 +107,9 @@ export class RepoManager {
       if (prev !== undefined && prev !== signature) {
         throw new GitOpError(
           'INVALID_ARGUMENT',
-          `同一个 URL 只能有一个 store（共享对象库），但本次配置与首次不同：${cfg.url}。` +
-            `请在首次调用时就给全配置，或先 evict 再重新 store。`,
+          `a URL may only have one store (the shared object database), and this ` +
+            `configuration differs from the first one: ${cfg.url}. Pass the full ` +
+            `configuration on the first call, or evict before calling store again.`,
         )
       }
       return existing
@@ -123,14 +128,16 @@ export class RepoManager {
           args.push(cfg.url, layout.storeDir)
           await this.#exec.run(args, { token, phase: 'clone' })
         }
-        // 幂等：即使复用已存在的 store 也确保这项配置存在
+        // Idempotent: make sure this setting exists even when reusing an existing store
         await this.#exec.run(['config', 'extensions.worktreeConfig', 'true'], {
           cwd: layout.storeDir,
         })
-        // storeDir 是共享对象库，工作区永远为空（--no-checkout）。但 clone 会把它的 HEAD
-        // 指向默认分支，而 git 据此认为该分支「已在某个 worktree 中 checkout」——于是
-        // createSession({ branch: 'main' }) 恒抛 BRANCH_IN_USE，默认分支变成不可用的。
-        // 这里没有任何东西需要 HEAD 停在一个分支上，所以让它游离。同样是幂等的。
+        // storeDir is the shared object database and its working tree is always
+        // empty (--no-checkout). But clone points its HEAD at the default branch,
+        // which makes git consider that branch "already checked out in a
+        // worktree" - so createSession({ branch: 'main' }) always threw
+        // BRANCH_IN_USE and the default branch became unusable. Nothing here
+        // needs HEAD to sit on a branch, so detach it. Also idempotent.
         await this.#detachStoreHead(layout.storeDir)
 
         const forge = cfg.forge ?? this.#buildForge(cfg, token)
@@ -157,20 +164,21 @@ export class RepoManager {
     return created
   }
 
-  /** 让 storeDir 的 HEAD 游离，好把每一个分支都留给 worktree。已经游离时是空操作。 */
+  /** Detach storeDir's HEAD so every branch stays available to a worktree. A no-op when already detached. */
   async #detachStoreHead(storeDir: string): Promise<void> {
     const head = await this.#exec
       .run(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: storeDir })
       .catch(() => 'HEAD')
     if (head.trim() === 'HEAD') return
-    // 用 update-ref 而不是 `checkout --detach`：后者会把文件检出到工作区，破坏
-    // storeDir 「工作区恒为空」的不变量（--no-checkout 的全部意义）。update-ref 只动
-    // HEAD 这一个 ref，索引与工作区一概不碰。
+    // update-ref rather than `checkout --detach`: the latter would materialize
+    // files in the working tree, breaking storeDir's "working tree is always
+    // empty" invariant, which is the whole point of --no-checkout. update-ref
+    // touches the HEAD ref and nothing else - not the index, not the worktree.
     const sha = await this.#exec
       .run(['rev-parse', 'HEAD'], { cwd: storeDir })
       .catch(() => '')
-    // 空仓库（clone 了一个没有提交的 remote）没有可指向的提交；保持原状即可，
-    // 没有提交也就没有分支会被占用。
+    // An empty repository (a clone of a remote with no commits) has nothing to
+    // point at. Leaving it alone is fine: with no commits, no branch is held.
     if (!sha.trim()) return
     await this.#exec.run(['update-ref', '--no-deref', 'HEAD', sha.trim()], { cwd: storeDir })
   }
@@ -181,7 +189,7 @@ export class RepoManager {
     if (!forgeToken) {
       throw new GitOpError(
         'INVALID_ARGUMENT',
-        '启用 github 需要 token：请在 github.token 或 auth.token 中提供',
+        'enabling github requires a token: pass it as github.token or auth.token',
       )
     }
     return new GitHubProvider({ ...cfg.github, url: cfg.url, token: forgeToken })

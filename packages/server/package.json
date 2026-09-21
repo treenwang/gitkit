@@ -1,23 +1,40 @@
 {
-  "name": "@aaxis/gitkit-server",
-  "version": "0.0.0",
-  "description": "HTTP transport for @aaxis/gitkit. Web-standard handler plus an Express adapter.",
-  "license": "UNLICENSED",
+  "name": "@treenwang/gitkit-server",
+  "version": "0.1.0",
+  "description": "HTTP transport for @treenwang/gitkit. Web-standard handler plus an Express adapter.",
+  "license": "MIT",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "sideEffects": false,
-  "scripts": { "build": "tsup", "typecheck": "tsc --noEmit" },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
-    "@aaxis/gitkit": "workspace:*",
-    "@aaxis/gitkit-client": "workspace:*"
+    "@treenwang/gitkit": "^0.1.0",
+    "@treenwang/gitkit-client": "^0.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

@@ -1,51 +1,63 @@
 # gitkit
 
-在服务端对 Git 仓库做程序化操作，并让前端直接编辑文件、提交、发起 PR。
+Operate on Git repositories programmatically from a server, and let a browser
+edit files, commit, and open pull requests directly.
 
-| 包 | 环境 | 职责 |
+| Package | Environment | Responsibility |
 | --- | --- | --- |
-| [`@aaxis/gitkit`](packages/core) | 服务端 | 核心：sparse checkout、worktree 隔离并发、结构化冲突、GitHub PR |
-| [`@aaxis/gitkit-server`](packages/server) | 服务端 | HTTP 传输层：Web 标准 handler + Express 适配器 |
-| [`@aaxis/gitkit-client`](packages/client) | 浏览器 | 类型化 RPC client，**零运行时依赖** |
-| [`@aaxis/gitkit-ui`](packages/ui) | 浏览器 | React hooks 与组件，**不打包 CSS、不含编辑器** |
+| [`@treenwang/gitkit`](packages/core) | server | The core: sparse checkout, worktree-isolated concurrency, structured conflicts, GitHub pull requests |
+| [`@treenwang/gitkit-server`](packages/server) | server | HTTP transport: a web-standard handler plus an Express adapter |
+| [`@treenwang/gitkit-client`](packages/client) | browser | Typed RPC client, **zero runtime dependencies** |
+| [`@treenwang/gitkit-ui`](packages/ui) | browser | React hooks and components, **no bundled CSS, no editor** |
 
-协议契约定义在 client 中、由 server 以 `import type` 复用，因此任何一处不一致都会在
-`bun run typecheck` 时失败 —— 契约测试即类型检查。
+The protocol contract is defined in the client and reused by the server through
+`import type`, so any disagreement between the two fails `npm run typecheck` —
+the contract test is the typecheck.
 
 ```bash
-bun install
-bun test          # 474 个测试；集成测试用本地 bare 仓库，不联网
-bun run typecheck
-bun run build
+npm install
+npm test          # 481 tests; the integration tests use a local bare repo and never go online
+npm run typecheck
+npm run build
 ```
 
-设计文档见 [`docs/superpowers/specs/`](docs/superpowers/specs/)。
+Design documents live in [`docs/superpowers/specs/`](docs/superpowers/specs/).
+
+Two runnable examples are in [`examples/`](examples/): a plain HTML one that
+exercises the client, and a React one that exercises `@treenwang/gitkit-ui`.
 
 ---
 
+An embeddable npm package for operating on Git repositories from a server:
+**check out only the directories you name**, **safe under concurrency**,
+**conflicts returned as structured data**, with optional GitHub pull requests.
 
-在服务端对 Git 仓库做程序化操作的可嵌入 npm 包：**只 checkout 指定目录**、
-**并发安全**、**冲突以结构化数据返回**，并可选集成 GitHub PR。
+## What it solves
 
-## 它解决什么
+- You need `docs/` out of a repository and do not want to pull the whole thing
+  down: partial clone plus cone-mode sparse checkout.
+- Your server handles several tasks against one repository at once: one git
+  worktree per task, sharing an object database, none of them interfering.
+- Someone else may push from another client at any moment: a rejected push and
+  a merge conflict are **return values**, not exceptions.
+- The target branch is protected: the main path is fixed as create a branch,
+  edit, commit, push, open a pull request.
 
-- 只需要仓库里的 `docs/`，不想把整个仓库拉下来 → partial clone + cone 模式 sparse-checkout。
-- 服务端要并发处理同一个仓库的多个任务 → 每个任务一个 git worktree，共享对象库，互不干扰。
-- 别人随时可能从其他客户端 push → push 被拒与 merge 冲突是**返回值**，不是异常。
-- 目标分支受保护 → 主线固定为「建分支 → 改 → commit → push → 建 PR」。
+## Requirements
 
-## 要求
+- Node.js >= 18
+- **git >= 2.32** on the host; the worktree and sparse-checkout combination is
+  defective in earlier versions
+- The workspace on **local disk or a Kubernetes PV**, **owned by a single
+  process** - several processes may not share one `root`
+- HTTPS personal access token authentication
+- Pull requests need `@octokit/rest`, an optional peerDependency. Without it
+  the core git features are unaffected.
 
-- Node.js ≥ 18
-- 宿主机安装 **git ≥ 2.32**（worktree + sparse-checkout 组合在更早版本有缺陷）
-- 工作区位于**本地磁盘或 K8s PV**，且**单进程独占**（不支持多进程共享同一 `root`）
-- HTTPS Personal Access Token 认证
-- PR 功能需要 `@octokit/rest`（optional peerDependency，不装不影响核心 git 功能）
-
-## 快速开始
+## Quick start
 
 ```ts
-import { RepoManager } from '@aaxis/gitkit'
+import { RepoManager } from '@treenwang/gitkit'
 
 const manager = new RepoManager({
   root: '/data/repos',
@@ -54,14 +66,14 @@ const manager = new RepoManager({
 
 const store = await manager.store({
   url: 'https://github.com/acme/web',
-  github: {},                        // 启用 PR 功能，token 复用上面的
+  github: {},                        // enables pull requests, reusing the token above
 })
 
 const result = await store.publish({
   branch: 'feat/docs-update',
   sparsePaths: [
-    { path: 'docs', requireChecks: false },   // 文档：可以直接合
-    { path: 'src', requireChecks: true },     // 代码：必须等 CI
+    { path: 'docs', requireChecks: false },   // docs can merge straight away
+    { path: 'src', requireChecks: true },     // code has to wait for CI
   ],
   author: { name: 'Bot', email: 'bot@acme.io' },
   message: 'docs: update getting started',
@@ -71,121 +83,132 @@ const result = await store.publish({
 })
 ```
 
-## 核心概念
+## Core concepts
 
-### 三层对象
+### Three layers
 
 ```
-RepoManager   store 生命周期、clone 去重、preflight、磁盘回收
-  └ RepoStore   一个 URL 一份共享对象库；开/收 session、fetch、分支
-      └ GitRepo   绑定单个 worktree 的操作门面
+RepoManager   store lifecycle, clone dedup, preflight, disk reclamation
+  └ RepoStore   one shared object database per URL; opens and closes sessions, fetches, branches
+      └ GitRepo   the operation facade bound to a single worktree
 ```
 
-### 并发模型
+### Concurrency model
 
-每个任务一个 `git worktree`：对象库只有一份（省磁盘），HEAD 与索引各自独立（真并发）。
-只有 `fetch` 与 `worktree add/remove` 走进程内串行队列，worktree 内部的操作全部无锁。
+One `git worktree` per task: a single object database, which saves disk, with
+its own HEAD and index, which makes it genuinely concurrent. Only `fetch` and
+`worktree add/remove` go through an in-process serial queue; everything inside a
+worktree is unlocked.
 
-因此**同一个 `root` 目录只能由一个进程使用**。K8s 下用 StatefulSet + ReadWriteOnce PV。
+That is why **one `root` directory can only be used by one process**. Under
+Kubernetes, a StatefulSet with a ReadWriteOnce PV.
 
 ### sparse-checkout
 
-只支持 **cone 模式**（目录前缀，不支持通配符）。worktree 的创建顺序固定为
-`worktree add --no-checkout` → `sparse-checkout set` → `checkout`；顺序错了会让
-partial clone 批量拉取全部 blob。
+**Cone mode only** - directory prefixes, no wildcards. A worktree is always
+created in the order `worktree add --no-checkout`, `sparse-checkout set`,
+`checkout`; getting that wrong makes a partial clone fetch every blob.
 
-注意 cone 模式**总是包含仓库根目录的文件**（这是 git 的固有行为），但本包的
-`PathGuard` 仍拒绝对根文件的写入，避免越出你声明的范围。
+Note that cone mode **always includes the files at the repository root**, which
+is git's own behaviour, but `PathGuard` still refuses writes to those files so
+nothing leaves the range you declared.
 
-## push 状态机
+## The push state machine
 
 ```
-push 分支
- ├─ 成功 ─────────────► createPR（若配置）─► 按 merge 模式处理 ─► ok: true
- └─ 被拒（non-fast-forward）
-      └─ retryOnReject（默认 true）─► pull（默认 merge 策略）
-            ├─ 无冲突 ─► 再 push 一次（只重试一次）
-            └─ 有冲突 ─► 停在 merge 中，返回 reason: 'conflict'
+push the branch
+ ├─ succeeded ──────► createPR, if configured ─► handle the merge mode ─► ok: true
+ └─ rejected (non-fast-forward)
+      └─ retryOnReject, true by default ─► pull, merge strategy by default
+            ├─ no conflict ─► push once more (one retry only)
+            └─ conflict ───► stop mid-merge, return reason: 'conflict'
 ```
 
 ```ts
 const r = await repo.push({ createPR: { title, base: 'main' }, merge: 'auto' })
 
 if (r.ok) {
-  r.pr                  // PR 已创建
-  r.autoMerge           // 合并结果；失败也不影响 r.ok 与 r.pr
+  r.pr                  // the pull request was opened
+  r.autoMerge           // how the merge went; a failure changes neither r.ok nor r.pr
 } else if (r.reason === 'conflict') {
-  r.conflicts           // 结构化冲突
-  r.worktreeDir         // 冲突现场，可用 store.attachSession() 接管
+  r.conflicts           // structured conflicts
+  r.worktreeDir         // the conflict state, which store.attachSession() can take over
 }
 ```
 
-### merge 模式
+### Merge modes
 
-| 值 | 含义 |
+| Value | Meaning |
 | --- | --- |
-| `'auto'`（默认） | 按改动文件命中的 `sparsePaths.requireChecks` 推导，**取最保守** |
-| `'now'` | 立即合并（`PUT /pulls/{n}/merge`） |
-| `'checksPass'` | GitHub 原生 auto-merge，等必需检查通过后由 GitHub 自己合 |
-| `false` | 只建 PR，人工合 |
+| `'auto'` (default) | Derived from the `sparsePaths.requireChecks` the changed files match, **taking the most conservative** |
+| `'now'` | Merge immediately (`PUT /pulls/{n}/merge`) |
+| `'checksPass'` | GitHub's native auto-merge; GitHub merges once the required checks pass |
+| `false` | Open the pull request only and merge by hand |
 
-`'auto'` 用 `git diff --name-only base...HEAD` 判断影响面 —— 只读 tree，不会触发
-partial clone 的惰性 blob 拉取。
+`'auto'` decides the blast radius with `git diff --name-only base...HEAD`, which
+reads trees only and never triggers a partial clone's lazy blob fetching.
 
-## 冲突处理
+## Conflicts
 
-**不是所有冲突都有 `<<<<<<<` 标记。** 只有双方都改了同一个文本文件才有；
-delete/modify、rename、binary 冲突在工作区里根本没有标记，本包统一从
-`git ls-files -u` 的 stage 位判定，三方内容一律用 `cat-file blob` 按 stage 取。
+**Not every conflict has `<<<<<<<` markers.** Only a text file both sides
+modified does. delete/modify, rename and binary conflicts leave no markers in
+the working tree at all, so this package decides the type from the stage bits of
+`git ls-files -u` and always reads all three sides per stage with
+`cat-file blob`.
 
 ```ts
 const conflicts = await repo.getConflicts()
 // { path, type, binary, base?, ours?, theirs?, hunks?, raw?, sidesSwapped? }
 
-// 整文件选边
+// pick a side for the whole file
 await repo.resolveConflicts([{ path: 'docs/a.md', take: 'ours' }])
-// 删除（解 delete/modify 必须用这个）
+// delete, which a delete/modify conflict requires
 await repo.resolveConflicts([{ path: 'docs/b.md', take: 'delete' }])
-// 手改
+// hand-edited content
 await repo.resolveConflicts([{ path: 'docs/c.md', content: merged }])
-// 逐块选边
+// a side per hunk
 await repo.resolveByHunks('docs/a.md', ['ours', 'theirs', { content: '...' }])
 
-await repo.commit({ message: 'resolve conflicts' })   // merge
-await repo.continueRebase()                           // rebase
+await repo.commit({ message: 'resolve conflicts' })   // concludes a merge
+await repo.continueRebase()                           // concludes a rebase
 ```
 
-`type` 有五种：`both_modified`、`both_added`、`deleted_by_them`、`deleted_by_us`、`rename`。
-rename 只识别不自动解，通过 `ourPath` / `theirPath` 交给你决策。
+`type` is one of `both_modified`, `both_added`, `deleted_by_them`,
+`deleted_by_us` and `rename`. Renames are detected but never resolved
+automatically; `ourPath` and `theirPath` hand the decision to you.
 
-**rebase 的方向归一化**：git 在 rebase 期间 stage 2/3 是反的（stage 2 是被 rebase 到的
-上游，stage 3 才是你正在重放的提交）。本包统一归一化，`ours` 永远表示**你这条分支的
-改动**，发生过交换时 `sidesSwapped: true`。
+**Rebase direction is normalized.** During a rebase git's stages 2 and 3 are
+reversed: stage 2 is the upstream being rebased onto and stage 3 the commit
+being replayed. This package normalizes that, so `ours` always means **the
+change on your branch**, with `sidesSwapped: true` when a swap happened.
 
-## session 生命周期
+## Session lifecycle
 
 ```ts
-// 自动释放。退出时若仍在 merge/rebase 中，则保留 worktree 并抛 MERGE_IN_PROGRESS
+// Releases itself. If it exits mid-merge or mid-rebase, the worktree is kept
+// and MERGE_IN_PROGRESS is thrown.
 await store.withSession(cfg, async (repo) => { /* ... */ })
 
-// 手动管理
+// Managed by hand
 const repo = await store.createSession(cfg)
 try { /* ... */ } finally { await repo.dispose() }
 
-// 接管已保留的 worktree（进程重启后恢复冲突现场）
+// Take a kept worktree back over, e.g. to recover conflict state after a restart
 const repo = await store.attachSession(worktreeDir)
 
-// 巡检
+// Inspect
 await store.listSessions()   // [{ dir, branch, state: 'clean'|'conflicted'|'merging' }]
 ```
 
-**残留的 merge/rebase 状态绝不自动清理** —— 自动 abort 可能丢掉已解了一半的冲突。
-用 `repo.recover({ abortOperation: true })` 显式处理。
+**Leftover merge or rebase state is never cleaned up automatically** - an
+automatic abort could discard a conflict someone had half resolved. Handle it
+explicitly with `repo.recover({ abortOperation: true })`.
 
-## 错误处理
+## Error handling
 
-预期结局用返回值表达（push 被拒、有冲突、PR 被保护规则挡住）；真异常才抛
-`GitOpError`，带 `code` 与已脱敏的 `detail` / `command`。
+Expected outcomes are return values: a rejected push, a conflict, a pull request
+blocked by protection rules. Only genuine failures throw a `GitOpError`, which
+carries a `code` and a scrubbed `detail` and `command`.
 
 ```
 GIT_NOT_FOUND · GIT_VERSION_TOO_OLD · AUTH_FAILED · NETWORK · TIMEOUT
@@ -195,23 +218,27 @@ PATH_OUTSIDE_SPARSE · PATH_TRAVERSAL · INVALID_ARGUMENT
 FORGE_NOT_INSTALLED · FORGE_API_ERROR · UNKNOWN
 ```
 
-映射不中的 stderr 一律是 `UNKNOWN` + 原始输出，绝不猜测。
+stderr that matches nothing is always `UNKNOWN` plus the raw output. It never
+guesses.
 
-## 安全
+## Security
 
-- **token 绝不写入 URL**（会落入 `.git/config` 与 reflog），只用
-  `-c http.extraheader` 单次注入。
-- token 绝不出现在日志、错误信息或 `command` 字段中，统一脱敏为 `***`。
-- 文件访问受 `PathGuard` 约束：拒绝目录穿越、`.git` 访问、越出 sparse 范围，
-  并在真正读写前用 `realpath` 复核，堵住经符号链接的逃逸。
+- **The token is never written into the URL**, where it would land in
+  `.git/config` and the reflog. It is injected per invocation with
+  `-c http.extraheader`.
+- The token never appears in logs, error messages or the `command` field; it is
+  always scrubbed to `***`.
+- File access goes through `PathGuard`, which refuses directory traversal,
+  access to `.git`, and anything outside the sparse range, then re-checks with
+  `realpath` immediately before reading or writing to close the symlink escape.
 
-## 开发
+## Development
 
 ```bash
-bun install
-bun test          # 295 个测试（全仓库），集成测试用本地 bare 仓库，不联网
-bun run typecheck
-bun run build
+npm install
+npm test          # 481 tests across the repo; the integration tests use a local bare repo and never go online
+npm run typecheck
+npm run build
 ```
 
-设计文档见 [`docs/superpowers/specs/`](docs/superpowers/specs/)。
+Design documents live in [`docs/superpowers/specs/`](docs/superpowers/specs/).

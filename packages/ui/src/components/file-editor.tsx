@@ -11,35 +11,36 @@ export type FileEditorRenderProps = {
 
 export type FileEditorProps = UseFileOptions & {
   path: string
-  /** 编辑器本体由宿主提供 —— 本包不含编辑器。 */
+  /** The editor itself comes from the host - this package contains none. */
   children: (p: FileEditorRenderProps) => ReactNode
   className?: string
 }
 
 const SAVE_LABEL: Record<SaveState, string> = {
-  clean: '已同步',
-  dirty: '未保存',
-  saving: '保存中…',
-  saved: '已保存',
-  error: '保存失败',
+  clean: 'In sync',
+  dirty: 'Unsaved',
+  saving: 'Saving...',
+  saved: 'Saved',
+  error: 'Save failed',
 }
 
 /**
- * 编辑器外壳：加载、脏标记、自动保存、etag 冲突提示。
- * 不含编辑器本体 —— 宿主通过 children 传入（Lexical / CodeMirror / textarea 均可）。
+ * The shell around an editor: loading, the dirty marker, autosave and the etag
+ * conflict prompt. It contains no editor itself - the host passes one through
+ * children, be it Lexical, CodeMirror or a plain textarea.
  */
 export function FileEditor(props: FileEditorProps): React.ReactElement {
   const { path, children, className, ...opts } = props
   const f = useFile(path, opts)
 
-  if (f.loading) return createElement(Muted, null, '正在加载…')
+  if (f.loading) return createElement(Muted, null, 'Loading...')
   if (f.loadError) {
     return createElement(Muted, { className: 'text-destructive' },
-      `无法打开：${(f.loadError as Error).message}`)
+      `Could not open: ${(f.loadError as Error).message}`)
   }
   if (f.binary) {
     return createElement(Panel, { className: 'p-3' },
-      createElement(Muted, null, `二进制文件，不可编辑（${f.size ?? 0} 字节）`))
+      createElement(Muted, null, `Binary file, not editable (${f.size ?? 0} bytes)`))
   }
 
   return createElement(
@@ -53,7 +54,7 @@ export function FileEditor(props: FileEditorProps): React.ReactElement {
     ),
     f.truncated
       ? createElement(Muted, { className: 'text-destructive' },
-          '文件过大，仅加载了开头部分；保存会截断内容，请勿在此编辑')
+          'This file is too large, so only the beginning was loaded. Saving would truncate it - do not edit here.')
       : null,
     f.staleConflict ? createElement(StaleBanner, { file: f }) : null,
     children({
@@ -71,20 +72,20 @@ function StaleBanner({ file }: { file: ReturnType<typeof useFile> }): React.Reac
     Panel,
     { className: 'border-destructive/50 bg-destructive/5 p-3 space-y-2' },
     createElement('p', { className: 'text-sm font-medium text-destructive' },
-      '这个文件在你编辑期间被改动了，本次保存未生效。'),
+      'This file changed while you were editing it, so your save did not land.'),
     createElement(Muted, null,
-      `服务端当前 ${c.serverContent.length} 字符，你的版本 ${c.localContent.length} 字符。`),
+      `The server holds ${c.serverContent.length} characters, your version has ${c.localContent.length}.`),
     createElement(
       'div',
       { className: 'flex gap-2' },
       createElement(Button, {
         onClick: () => { void file.overwriteRemote() },
-        children: '用我的覆盖',
+        children: 'Overwrite with mine',
       }),
       createElement(Button, {
         variant: 'ghost',
         onClick: () => { file.discardLocal() },
-        children: '放弃我的改动',
+        children: 'Discard my changes',
       }),
     ),
   )

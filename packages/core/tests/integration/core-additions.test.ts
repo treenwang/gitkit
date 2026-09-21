@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { RepoManager } from '../../src/api/repo-manager'
@@ -23,7 +23,7 @@ function codeOf(p: Promise<unknown>): Promise<string> {
 }
 
 describe('deleteFile', () => {
-  test('删除后文件消失，commit 记录为删除', async () => {
+  test('the file is gone after a delete and the commit records a deletion', async () => {
     expect(await repo.exists('docs/a.md')).toBe(true)
     await repo.deleteFile('docs/a.md')
     expect(existsSync(join(repo.dir, 'docs', 'a.md'))).toBe(false)
@@ -32,38 +32,38 @@ describe('deleteFile', () => {
     expect(files).not.toContain('docs/a.md')
   })
 
-  test('sparse 范围外 → PATH_OUTSIDE_SPARSE', async () => {
+  test('outside the sparse range gives PATH_OUTSIDE_SPARSE', async () => {
     expect(await codeOf(repo.deleteFile('src/index.ts'))).toBe('PATH_OUTSIDE_SPARSE')
   })
 
-  test('穿越路径 → PATH_TRAVERSAL', async () => {
+  test('a traversal path gives PATH_TRAVERSAL', async () => {
     expect(await codeOf(repo.deleteFile('../escape.md'))).toBe('PATH_TRAVERSAL')
   })
 
-  test('不存在的文件抛错', async () => {
+  test('a missing file throws', async () => {
     await expect(repo.deleteFile('docs/nope.md')).rejects.toThrow()
   })
 })
 
 describe('readBuffer', () => {
-  test('按字节读取文本', async () => {
+  test('reads text as bytes', async () => {
     expect((await repo.readBuffer('docs/a.md')).toString('utf8')).toBe('# a\n')
   })
 
-  test('二进制内容字节一致，可用于 NUL 探测', async () => {
+  test('binary content is byte-identical, which NUL detection relies on', async () => {
     writeFileSync(join(repo.dir, 'docs', 'b.bin'), Buffer.from([0, 1, 2, 255]))
     const buf = await repo.readBuffer('docs/b.bin')
     expect([...buf]).toEqual([0, 1, 2, 255])
     expect(buf.includes(0)).toBe(true)
   })
 
-  test('受 sparse 范围约束', async () => {
+  test('is constrained by the sparse range', async () => {
     expect(await codeOf(repo.readBuffer('src/index.ts'))).toBe('PATH_OUTSIDE_SPARSE')
   })
 })
 
 describe('getDiff', () => {
-  test('工作区 vs HEAD 的未提交改动', async () => {
+  test('uncommitted changes, working tree against HEAD', async () => {
     await repo.writeFile('docs/a.md', '# changed\n')
     const { patch } = await repo.getDiff()
     expect(patch).toContain('docs/a.md')
@@ -71,14 +71,14 @@ describe('getDiff', () => {
     expect(patch).toContain('+# changed')
   })
 
-  test('新建的未跟踪文件也出现在 diff 里', async () => {
-    await repo.writeFile('docs/brand-new.md', '# 新文件\n')
+  test('a newly created untracked file shows up in the diff too', async () => {
+    await repo.writeFile('docs/brand-new.md', '# brand new\n')
     const { patch } = await repo.getDiff()
     expect(patch).toContain('docs/brand-new.md')
-    expect(patch).toContain('+# 新文件')
+    expect(patch).toContain('+# brand new')
   })
 
-  test('已跟踪的修改与新建文件同时出现', async () => {
+  test('a tracked modification and a new file both appear', async () => {
     await repo.writeFile('docs/a.md', '# changed\n')
     await repo.writeFile('docs/new.md', 'new\n')
     const { patch } = await repo.getDiff()
@@ -86,46 +86,46 @@ describe('getDiff', () => {
     expect(patch).toContain('docs/new.md')
   })
 
-  test('未跟踪文件同样受 pathspec 约束', async () => {
+  test('untracked files obey the pathspec as well', async () => {
     await repo.writeFile('docs/inside.md', 'x\n')
     const { patch } = await repo.getDiff({ paths: ['docs/api'] })
     expect(patch).not.toContain('docs/inside.md')
   })
 
-  test('指定 against 时不混入未跟踪文件（它们不在提交区间里）', async () => {
+  test('with against set, untracked files are excluded - they are not in the commit range', async () => {
     await repo.writeFile('docs/untracked.md', 'x\n')
     const { patch } = await repo.getDiff({ against: 'origin/main' })
     expect(patch).not.toContain('docs/untracked.md')
   })
 
-  test('无改动时返回空 patch', async () => {
+  test('returns an empty patch when nothing changed', async () => {
     expect((await repo.getDiff()).patch).toBe('')
   })
 
-  test('against 用三点 diff 对比 merge-base', async () => {
+  test('against uses a three-dot diff against the merge base', async () => {
     await repo.writeFile('docs/n.md', 'new\n')
     await repo.commit({ message: 'add n' })
     const { patch } = await repo.getDiff({ against: 'origin/main' })
     expect(patch).toContain('docs/n.md')
   })
 
-  test('默认 pathspec 是 session 的 sparsePaths', async () => {
+  test('the default pathspec is the session sparsePaths', async () => {
     await repo.writeFile('docs/a.md', '# changed\n')
-    // 直接改工作区里 sparse 之外的位置（绕过 PathGuard），验证默认 pathspec 会把它挡在外面
+    // Write outside the sparse range directly, bypassing PathGuard, to confirm the default pathspec keeps it out
     const { patch } = await repo.getDiff()
     expect(patch).toContain('docs/a.md')
     expect(patch).not.toContain('src/')
   })
 
-  test('显式传入 sparse 范围外的 paths → PATH_OUTSIDE_SPARSE', async () => {
+  test('passing paths outside the sparse range explicitly gives PATH_OUTSIDE_SPARSE', async () => {
     expect(await codeOf(repo.getDiff({ paths: ['src'] }))).toBe('PATH_OUTSIDE_SPARSE')
   })
 
-  test('穿越路径 → PATH_TRAVERSAL', async () => {
+  test('a traversal path gives PATH_TRAVERSAL', async () => {
     expect(await codeOf(repo.getDiff({ paths: ['../etc'] }))).toBe('PATH_TRAVERSAL')
   })
 
-  test('context 行数可调', async () => {
+  test('the number of context lines is adjustable', async () => {
     await repo.writeFile('docs/multi.md', 'l1\nl2\nl3\nl4\nl5\nl6\nl7\n')
     await repo.commit({ message: 'multi' })
     await repo.writeFile('docs/multi.md', 'l1\nl2\nl3\nCHANGED\nl5\nl6\nl7\n')
@@ -134,7 +134,7 @@ describe('getDiff', () => {
     expect(wide.patch.split('\n').length).toBeGreaterThan(narrow.patch.split('\n').length)
   })
 
-  test('全量模式（无 sparsePaths）下不限定路径', async () => {
+  test('full-checkout mode, with no sparsePaths, does not restrict paths', async () => {
     const full = await store.createSession({ branch: 'feat/full-diff', author: AUTHOR })
     await full.writeFile('src/index.ts', 'export const x = 2\n')
     expect((await full.getDiff()).patch).toContain('src/index.ts')

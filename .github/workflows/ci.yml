@@ -6,19 +6,22 @@ on:
   pull_request:
 
 jobs:
-  # 类型检查与打包只跑一次，与运行时矩阵无关
+  # Typecheck and build run once; they do not depend on the runtime matrix.
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with: { bun-version: latest }
-      - run: bun install --frozen-lockfile
-      - run: bun run typecheck
-      - run: bun run build
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
 
-  # git 版本矩阵是必需的：sparse-checkout 与 worktree 组合的行为随版本变化。
-  # 2.32 是 package.json 中声明的下限，必须真正跑通。
+  # The git version matrix is necessary: the behaviour of sparse-checkout
+  # combined with worktrees changes between versions. 2.32 is the floor declared
+  # in package.json and has to genuinely pass.
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -33,9 +36,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-
-      - uses: oven-sh/setup-bun@v2
-        with: { bun-version: latest }
+          cache: npm
 
       - name: Build git ${{ matrix.git }} from source
         if: matrix.git != 'system'
@@ -53,6 +54,6 @@ jobs:
       - name: Report git version under test
         run: git --version
 
-      - run: bun install --frozen-lockfile
-      # 浏览器侧的包用 happy-dom；由 bunfig.toml 预加载
-      - run: bun test
+      - run: npm ci
+      # The browser-side package runs in happy-dom, configured by the ui project in vitest.config.ts
+      - run: npm test

@@ -28,8 +28,8 @@ export function git(cwd: string, ...args: string[]): string {
 }
 
 /**
- * 造一个带内容的 bare 仓库当作 remote，返回其路径。
- * 内容：docs/a.md、docs/api/b.md、src/index.ts、README.md、assets/logo.bin(二进制)
+ * Build a bare repository with content to act as the remote, returning its path.
+ * Content: docs/a.md, docs/api/b.md, src/index.ts, README.md, assets/logo.bin (binary)
  */
 export function makeBareRemote(root: string): string {
   const bare = join(root, 'remote.git')
@@ -38,7 +38,7 @@ export function makeBareRemote(root: string): string {
   mkdirSync(seed, { recursive: true })
 
   git(bare, 'init', '--bare', '-b', 'main', '.')
-  // partial clone 需要服务端允许 filter；file:// 传输走本地 upload-pack
+  // A partial clone needs the server to allow filters; file:// transport goes through the local upload-pack
   git(bare, 'config', 'uploadpack.allowfilter', 'true')
   git(bare, 'config', 'uploadpack.allowanysha1inwant', 'true')
   git(seed, 'init', '-b', 'main', '.')
@@ -59,7 +59,7 @@ export function makeBareRemote(root: string): string {
   return bare
 }
 
-/** 在 remote 的某个分支上追加一次提交，模拟"别人 push 了改动"。 */
+/** Add a commit on a branch of the remote, simulating "someone else pushed". */
 export function pushToRemote(
   root: string,
   bare: string,
@@ -87,8 +87,9 @@ export function pushToRemote(
 export const urlOf = (p: string): string => `file://${p}`
 
 /**
- * 在 remote 的 main 上造出全部五类冲突所需的前置内容并推送。
- * 返回后，调用方在自己的分支上做对应改动，pull origin/main 即可复现。
+ * Push onto the remote's main everything the five kinds of conflict need.
+ * Afterwards the caller makes the matching change on its own branch and pulls
+ * origin/main to reproduce each one.
  */
 export function seedConflictBase(root: string, bare: string): void {
   pushToRemote(root, bare, {

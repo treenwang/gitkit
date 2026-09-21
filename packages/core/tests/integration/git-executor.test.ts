@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { GitExecutor } from '../../src/exec/git-executor'
 import { GitOpError, type ProgressEvent } from '../../src/types'
 import { cleanup, makeBareRemote, tempDir } from '../helpers/fixtures'
@@ -8,20 +8,20 @@ beforeEach(() => { root = tempDir() })
 afterEach(() => { cleanup(root) })
 
 describe('GitExecutor', () => {
-  test('version 解析出版本号', async () => {
+  test('version parses the version number', async () => {
     const v = await new GitExecutor().version()
     expect(v.major).toBeGreaterThanOrEqual(2)
     expect(typeof v.raw).toBe('string')
   })
 
-  test('run 返回 trim 后的 stdout', async () => {
+  test('run returns trimmed stdout', async () => {
     const bare = makeBareRemote(root)
     const out = await new GitExecutor().run(['ls-remote', '--heads', bare])
     expect(out).toContain('refs/heads/main')
     expect(out.endsWith('\n')).toBe(false)
   })
 
-  test('失败时抛 GitOpError 且带映射后的 code', async () => {
+  test('a failure throws GitOpError with the mapped code', async () => {
     try {
       await new GitExecutor().run(['status'], { cwd: root })
       throw new Error('should have thrown')
@@ -31,7 +31,7 @@ describe('GitExecutor', () => {
     }
   })
 
-  test('错误信息与 command 中不含 token', async () => {
+  test('neither the message nor command contains the token', async () => {
     const token = 'ghp_supersecrettoken'
     try {
       await new GitExecutor().run(['ls-remote', 'https://127.0.0.1:1/nope.git'], {
@@ -46,7 +46,7 @@ describe('GitExecutor', () => {
     }
   })
 
-  test('超时抛 TIMEOUT', async () => {
+  test('a timeout throws TIMEOUT', async () => {
     try {
       await new GitExecutor({ timeout: 1 }).run(['ls-remote', 'https://10.255.255.1/x.git'])
       throw new Error('should have thrown')
@@ -55,7 +55,7 @@ describe('GitExecutor', () => {
     }
   })
 
-  test('onProgress 收到事件且 phase 正确', async () => {
+  test('onProgress receives events with the right phase', async () => {
     const events: ProgressEvent[] = []
     const bare = makeBareRemote(root)
     const exec = new GitExecutor({ onProgress: (e) => events.push(e) })
@@ -64,14 +64,14 @@ describe('GitExecutor', () => {
     expect(events.every((e) => e.phase === 'clone')).toBe(true)
   })
 
-  test('注入 merge.conflictStyle=diff3 与认证头', () => {
+  test('injects merge.conflictStyle=diff3 and the auth header', () => {
     const exec = new GitExecutor()
     expect(exec.buildArgs(['status'], {})).toContain('merge.conflictStyle=diff3')
     const withAuth = exec.buildArgs(['fetch'], { token: 'T' }).join(' ')
     expect(withAuth).toContain('http.extraheader=AUTHORIZATION: basic')
   })
 
-  test('allowExitCodes 放行预期的非零退出', async () => {
+  test('allowExitCodes lets an expected non-zero exit through', async () => {
     const bare = makeBareRemote(root)
     const exec = new GitExecutor()
     await exec.run(['clone', bare, `${root}/c`])
@@ -81,7 +81,7 @@ describe('GitExecutor', () => {
     expect(r.exitCode).toBe(0)
   })
 
-  test('gitPath 不存在时抛 GIT_NOT_FOUND', async () => {
+  test('a missing gitPath throws GIT_NOT_FOUND', async () => {
     try {
       await new GitExecutor({ gitPath: '/nonexistent/git' }).run(['--version'])
       throw new Error('should have thrown')

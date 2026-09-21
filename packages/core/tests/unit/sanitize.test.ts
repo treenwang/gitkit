@@ -1,12 +1,12 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 import { redact } from '../../src/exec/sanitize'
 
 describe('redact', () => {
-  test('替换明文 secret', () => {
+  test('replaces a plaintext secret', () => {
     expect(redact('token is ghp_abc123', ['ghp_abc123'])).toBe('token is ***')
   })
 
-  test('替换 base64 编码后的 secret（http.extraheader 的形式）', () => {
+  test('replaces the base64-encoded secret, the form http.extraheader uses', () => {
     const token = 'ghp_abc123'
     const encoded = Buffer.from(`x-access-token:${token}`).toString('base64')
     const line = `git -c http.extraheader=AUTHORIZATION: basic ${encoded} fetch`
@@ -15,19 +15,19 @@ describe('redact', () => {
     expect(out).toContain('***')
   })
 
-  test('多次出现全部替换', () => {
+  test('replaces every occurrence', () => {
     expect(redact('a T b T c', ['T'])).toBe('a *** b *** c')
   })
 
-  test('空 secret 被忽略，不产生全文替换', () => {
+  test('an empty secret is ignored rather than replacing everything', () => {
     expect(redact('hello', ['', '  '])).toBe('hello')
   })
 
-  test('secret 含正则元字符时按字面量替换', () => {
+  test('a secret containing regex metacharacters is replaced literally', () => {
     expect(redact('v=a.b*c', ['a.b*c'])).toBe('v=***')
   })
 
-  test('无 secret 时原样返回', () => {
+  test('returns the text unchanged when there is no secret', () => {
     expect(redact('nothing to hide', [])).toBe('nothing to hide')
   })
 })

@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test, vi } from 'vitest'
 import { GitHubProvider, parseRepoSlug } from '../../src/forge/github-provider'
 import { GitOpError } from '../../src/types'
 import { FakeOctokit, HttpError, rawPR } from '../helpers/fake-octokit'
@@ -8,23 +8,23 @@ const mk = (octokit: FakeOctokit) =>
   new GitHubProvider({ url: URL_, token: 'T', octokit })
 
 describe('parseRepoSlug', () => {
-  test('标准 URL', () => {
+  test('a standard URL', () => {
     expect(parseRepoSlug('https://github.com/acme/web')).toEqual({ owner: 'acme', repo: 'web' })
   })
-  test('带 .git 后缀', () => {
+  test('with a .git suffix', () => {
     expect(parseRepoSlug('https://github.com/acme/web.git').repo).toBe('web')
   })
-  test('GHE 带路径前缀时取最后两段', () => {
+  test('with a GHE path prefix, the last two segments are taken', () => {
     expect(parseRepoSlug('https://ghe.corp.io/scm/team/proj'))
       .toEqual({ owner: 'team', repo: 'proj' })
   })
-  test('缺少 owner/repo 抛错', () => {
+  test('throws when owner/repo is missing', () => {
     expect(() => parseRepoSlug('https://github.com/acme')).toThrow(GitOpError)
   })
 })
 
 describe('createPR', () => {
-  test('发出正确的请求并映射返回值', async () => {
+  test('sends the right request and maps the result', async () => {
     const fake = new FakeOctokit().on('POST /repos/{owner}/{repo}/pulls', () => ({
       data: rawPR(),
     }))
@@ -45,13 +45,13 @@ describe('createPR', () => {
     })
   })
 
-  test('省略 body/draft 时填默认值', async () => {
+  test('fills in defaults when body and draft are omitted', async () => {
     const fake = new FakeOctokit().on('POST /repos/{owner}/{repo}/pulls', () => ({ data: rawPR() }))
     await mk(fake).createPR({ title: 't', head: 'h', base: 'main' })
     expect(fake.calls[0]!.params).toMatchObject({ body: '', draft: false })
   })
 
-  test('API 报错时抛 FORGE_API_ERROR', async () => {
+  test('an API error throws FORGE_API_ERROR', async () => {
     const fake = new FakeOctokit().on('POST /repos/{owner}/{repo}/pulls', () => {
       throw new HttpError(422, 'A pull request already exists')
     })
@@ -63,7 +63,7 @@ describe('createPR', () => {
 })
 
 describe('listPRs / getPR', () => {
-  test('listPRs 默认只列 open，head 带 owner 前缀', async () => {
+  test('listPRs lists open pull requests by default and prefixes head with the owner', async () => {
     const fake = new FakeOctokit().on('GET /repos/{owner}/{repo}/pulls', () => ({
       data: [rawPR(), rawPR({ number: 43 })],
     }))
@@ -72,7 +72,7 @@ describe('listPRs / getPR', () => {
     expect(fake.calls[0]!.params).toMatchObject({ state: 'open', head: 'acme:feat/x' })
   })
 
-  test('getPR 按编号取', async () => {
+  test('getPR fetches by number', async () => {
     const fake = new FakeOctokit().on('GET /repos/{owner}/{repo}/pulls/{pull_number}', () => ({
       data: rawPR({ number: 7 }),
     }))
@@ -81,8 +81,8 @@ describe('listPRs / getPR', () => {
   })
 })
 
-describe('mergePR —— 立即合并', () => {
-  test('成功', async () => {
+describe('mergePR - merging right away', () => {
+  test('success', async () => {
     const fake = new FakeOctokit()
       .on('PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge', () => ({ data: { merged: true } }))
     expect(await mk(fake).mergePR(42, 'squash'))
@@ -90,7 +90,7 @@ describe('mergePR —— 立即合并', () => {
     expect(fake.calls[0]!.params).toMatchObject({ pull_number: 42, merge_method: 'squash' })
   })
 
-  test('405（分支保护未满足）→ blocked_by_checks，不抛错', async () => {
+  test('405, branch protection unsatisfied, becomes blocked_by_checks rather than throwing', async () => {
     const fake = new FakeOctokit()
       .on('PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge', () => {
         throw new HttpError(405, 'Pull Request is not mergeable')
@@ -118,7 +118,7 @@ describe('mergePR —— 立即合并', () => {
     if (!r.ok) expect(r.reason).toBe('not_allowed')
   })
 
-  test('其他状态码 → api_error', async () => {
+  test('any other status becomes api_error', async () => {
     const fake = new FakeOctokit()
       .on('PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge', () => {
         throw new HttpError(500, 'boom')
@@ -128,13 +128,13 @@ describe('mergePR —— 立即合并', () => {
   })
 })
 
-describe('enableAutoMerge —— 等 CI', () => {
+describe('enableAutoMerge - waiting for CI', () => {
   const withPR = () =>
     new FakeOctokit().on('GET /repos/{owner}/{repo}/pulls/{pull_number}', () => ({
       data: rawPR({ node_id: 'PR_node_42' }),
     }))
 
-  test('成功时返回 scheduled', async () => {
+  test('returns scheduled on success', async () => {
     const fake = withPR().onGraphql(() => ({ enablePullRequestAutoMerge: {} }))
     expect(await mk(fake).enableAutoMerge(42, 'squash'))
       .toEqual({ ok: true, merged: false, scheduled: true })
@@ -143,7 +143,7 @@ describe('enableAutoMerge —— 等 CI', () => {
     })
   })
 
-  test('仓库未开启 auto-merge → not_allowed', async () => {
+  test('a repository with auto-merge turned off gives not_allowed', async () => {
     const fake = withPR().onGraphql(() => {
       throw new Error('Auto-merge is not allowed for this repository')
     })
@@ -151,7 +151,7 @@ describe('enableAutoMerge —— 等 CI', () => {
     if (!r.ok) expect(r.reason).toBe('not_allowed')
   })
 
-  test('PR 已有冲突 → conflict', async () => {
+  test('a pull request that already conflicts gives conflict', async () => {
     const fake = withPR().onGraphql(() => {
       throw new Error('Pull request is in conflict and cannot be merged')
     })
@@ -159,7 +159,7 @@ describe('enableAutoMerge —— 等 CI', () => {
     if (!r.ok) expect(r.reason).toBe('conflict')
   })
 
-  test('取 node_id 失败 → api_error', async () => {
+  test('failing to fetch node_id gives api_error', async () => {
     const fake = new FakeOctokit()
     const r = await mk(fake).enableAutoMerge(42, 'merge')
     if (!r.ok) expect(r.reason).toBe('api_error')
@@ -167,7 +167,15 @@ describe('enableAutoMerge —— 等 CI', () => {
 })
 
 describe('optional dependency', () => {
-  test('未注入 octokit 且未安装 @octokit/rest 时抛 FORGE_NOT_INSTALLED', async () => {
+  // Make import('@octokit/rest') fail for certain. This cannot rely on the
+  // repository happening not to have octokit installed: the moment any package
+  // in the monorepo (examples/playground, say) depends on it, hoisting removes
+  // that premise.
+  vi.mock('@octokit/rest', () => {
+    throw new Error("Cannot find package '@octokit/rest'")
+  })
+
+  test('throws FORGE_NOT_INSTALLED with no octokit injected and @octokit/rest absent', async () => {
     const p = new GitHubProvider({ url: URL_, token: 'T' })
     const code = await p
       .createPR({ title: 't', head: 'h', base: 'main' })

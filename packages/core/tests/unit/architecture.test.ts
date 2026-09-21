@@ -1,9 +1,10 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-// 相对于本文件定位，而不是相对于 cwd —— 否则从仓库根目录跑测试会找不到 src/
-const SRC = resolve(import.meta.dir, '..', '..', 'src')
+// Resolved relative to this file rather than cwd, or running the tests from the repo root would not find src/
+const SRC = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src')
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -16,8 +17,8 @@ function walk(dir: string, out: string[] = []): string[] {
 
 const files = walk(SRC)
 
-describe('架构约束', () => {
-  test('只有 git-executor.ts 可以 import child_process', () => {
+describe('architectural constraints', () => {
+  test('only git-executor.ts may import child_process', () => {
     const offenders = files.filter(
       (f) =>
         !f.endsWith('git-executor.ts') &&
@@ -26,7 +27,7 @@ describe('架构约束', () => {
     expect(offenders).toEqual([])
   })
 
-  test('domain/ 下不得碰 IO', () => {
+  test('nothing under domain/ may touch IO', () => {
     const offenders = files
       .filter((f) => f.includes('/domain/'))
       .filter((f) =>
@@ -37,14 +38,14 @@ describe('架构约束', () => {
     expect(offenders).toEqual([])
   })
 
-  test('domain/ 不得 import api/ 或 exec/', () => {
+  test('domain/ may not import api/ or exec/', () => {
     const offenders = files
       .filter((f) => f.includes('/domain/'))
       .filter((f) => /from ['"]\.\.\/(api|exec)\//.test(readFileSync(f, 'utf8')))
     expect(offenders).toEqual([])
   })
 
-  test('exec/ 不得 import api/ 或 domain 的有状态类', () => {
+  test('exec/ may not import api/ or the stateful classes in domain', () => {
     const offenders = files
       .filter((f) => f.includes('/exec/'))
       .filter((f) => /from ['"]\.\.\/api\//.test(readFileSync(f, 'utf8')))

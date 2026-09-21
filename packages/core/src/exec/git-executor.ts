@@ -8,7 +8,7 @@ export type ExecOptions = {
   token?: string
   timeout?: number
   phase?: ProgressEvent['phase']
-  /** 允许非零退出码而不抛错（如 `git diff --quiet`）。 */
+  /** Accept these non-zero exit codes without throwing (e.g. `git diff --quiet`). */
   allowExitCodes?: readonly number[]
 }
 
@@ -18,10 +18,12 @@ export type GitVersion = { major: number; minor: number; patch: number; raw: str
 const DEFAULT_TIMEOUT = 120_000
 
 /**
- * 唯一 spawn git 的地方。其他任何文件出现 child_process 均为实现错误。
+ * The only place that spawns git. child_process appearing in any other file is
+ * an implementation error.
  *
- * 认证通过 `-c http.extraheader` 单次注入，绝不写入 URL —— 后者会落入
- * .git/config 与 reflog 造成泄露。
+ * Credentials are injected per invocation through `-c http.extraheader` and
+ * never written into the URL, which would leak them into .git/config and the
+ * reflog.
  */
 export class GitExecutor {
   readonly #gitPath: string
@@ -38,7 +40,7 @@ export class GitExecutor {
     this.#onProgress = opts.onProgress
   }
 
-  /** 暴露仅为可测试性：构造实际传给 git 的完整参数列表。 */
+  /** Exposed only for testability: builds the full argument list handed to git. */
   buildArgs(args: readonly string[], opts: ExecOptions): string[] {
     const pre = [
       '-c', 'merge.conflictStyle=diff3',
@@ -52,7 +54,7 @@ export class GitExecutor {
     return [...pre, ...args]
   }
 
-  /** 返回 trim 后的 stdout；失败抛 GitOpError。 */
+  /** Returns trimmed stdout; throws GitOpError on failure. */
   async run(args: readonly string[], opts: ExecOptions = {}): Promise<string> {
     return (await this.exec(args, opts)).stdout
   }
@@ -126,7 +128,7 @@ export class GitExecutor {
     })
   }
 
-  /** 以 Buffer 返回 stdout —— 用于可能是二进制的 blob 内容。 */
+  /** Returns stdout as a Buffer - for blob contents that may be binary. */
   async runBuffer(args: readonly string[], opts: ExecOptions = {}): Promise<Buffer> {
     const full = this.buildArgs(args, opts)
     const secrets = opts.token ? [opts.token] : []
@@ -172,7 +174,7 @@ export class GitExecutor {
     const raw = await this.run(['--version'])
     const m = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(raw)
     if (!m) {
-      throw new GitOpError('UNKNOWN', `无法解析 git 版本: ${raw}`, { detail: raw })
+      throw new GitOpError('UNKNOWN', `cannot parse the git version: ${raw}`, { detail: raw })
     }
     return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3] ?? 0), raw }
   }

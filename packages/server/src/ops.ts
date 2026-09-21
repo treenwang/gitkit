@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
-import type { GitRepo } from '@aaxis/gitkit'
+import type { GitRepo } from '@treenwang/gitkit'
 import type {
   ChangeEntry, FileEntry, OpName, OpParams, OpResult, ReadResult, SessionStatus,
-} from '@aaxis/gitkit-client'
+} from '@treenwang/gitkit-client'
 import { TransportError } from './errors'
 
 export type OpContext = {
@@ -19,12 +19,12 @@ export function etagOf(content: string | Buffer): string {
 function requireString(params: Record<string, unknown>, key: string): string {
   const v = params[key]
   if (typeof v !== 'string' || v.length === 0) {
-    throw new TransportError('INVALID_ARGUMENT', `参数 ${key} 必须是非空字符串`)
+    throw new TransportError('INVALID_ARGUMENT', `${key} must be a non-empty string`)
   }
   return v
 }
 
-/** 每个 op 的实现。参数校验在此完成 —— 到达核心包的都是已校验的输入。 */
+/** The implementation of each op. Arguments are validated here, so the core package only ever sees checked input. */
 export const OPS: {
   [K in OpName]: (ctx: OpContext, params: OpParams<K>) => Promise<OpResult<K>>
 } = {
@@ -62,7 +62,7 @@ export const OPS: {
             : ('clean' as const),
     }))
 
-    // 已删除的文件不在工作区里，listFiles 看不到，需要从 status 补回来
+    // A deleted file is no longer in the working tree, so listFiles cannot see it; status puts it back
     for (const path of st.modified.concat(st.staged)) {
       if (!paths.includes(path) && !entries.some((e) => e.path === path)) {
         entries.push({ path, type: 'file', status: 'deleted' })
@@ -76,7 +76,7 @@ export const OPS: {
     const path = requireString(params as Record<string, unknown>, 'path')
     const buf = await ctx.repo.readBuffer(path)
 
-    // NUL 字节探测：二进制内容按 UTF-8 解码会被破坏，不返回 content
+    // NUL-byte detection: binary content would be mangled by UTF-8 decoding, so content is withheld
     if (buf.subarray(0, Math.min(buf.length, 8000)).includes(0)) {
       return { binary: true, size: buf.length }
     }
@@ -95,22 +95,23 @@ export const OPS: {
     const p = params as Record<string, unknown>
     const path = requireString(p, 'path')
     if (typeof p.content !== 'string') {
-      throw new TransportError('INVALID_ARGUMENT', '参数 content 必须是字符串')
+      throw new TransportError('INVALID_ARGUMENT', 'content must be a string')
     }
     const content = p.content
 
     const exists = await ctx.repo.exists(path)
     if (params.ifNotExists && exists) {
-      throw new TransportError('ALREADY_EXISTS', `路径已存在: ${path}`)
+      throw new TransportError('ALREADY_EXISTS', `path already exists: ${path}`)
     }
 
-    // 乐观并发控制：baseEtag 与服务端当前内容不一致时拒绝写入，
-    // 否则会无声覆盖掉别处（另一个标签页、一次 pull）产生的改动。
+    // Optimistic concurrency: when baseEtag disagrees with what the server
+    // currently holds, refuse the write rather than silently overwriting a
+    // change made elsewhere - another tab, or a pull.
     if (params.baseEtag !== undefined && exists) {
       const currentBuf = await ctx.repo.readBuffer(path)
       const currentEtag = etagOf(currentBuf)
       if (currentEtag !== params.baseEtag) {
-        throw new TransportError('STALE_ETAG', '文件已被改动，本次写入未生效', {
+        throw new TransportError('STALE_ETAG', 'the file changed, so this write did not land', {
           current: { content: currentBuf.toString('utf8'), etag: currentEtag },
         })
       }
@@ -130,7 +131,7 @@ export const OPS: {
     const staged = new Set(st.staged)
     const seen = new Map<string, ChangeEntry>()
     const add = (path: string, status: ChangeEntry['status']): void => {
-      // conflicted 优先级最高，不被后续覆盖
+      // conflicted wins; nothing later overrides it
       if (seen.get(path)?.status === 'conflicted') return
       seen.set(path, { path, status, staged: staged.has(path) })
     }
@@ -169,7 +170,7 @@ export const OPS: {
     if (params.retryOnReject !== undefined) opts.retryOnReject = params.retryOnReject
 
     const r = await ctx.repo.push(opts)
-    // worktreeDir 是服务端绝对路径，绝不能发给浏览器
+    // worktreeDir is an absolute server path and must never reach the browser
     if (!r.ok && r.reason === 'conflict') {
       const { worktreeDir: _dropped, ...rest } = r
       return rest
@@ -181,18 +182,18 @@ export const OPS: {
     const opts: { strategy?: 'merge' | 'rebase'; ref?: string } = {}
     if (params.strategy) {
       if (params.strategy !== 'merge' && params.strategy !== 'rebase') {
-        throw new TransportError('INVALID_ARGUMENT', 'strategy 必须是 merge 或 rebase')
+        throw new TransportError('INVALID_ARGUMENT', 'strategy must be merge or rebase')
       }
       opts.strategy = params.strategy
     }
-    // ref 的合法性由核心包的 assertValidRevision 把关（含前导 - 的参数注入）
+    // The core package's assertValidRevision vets ref, including argument injection through a leading -
     if (params.ref !== undefined) opts.ref = requireString(params as Record<string, unknown>, 'ref')
     return ctx.repo.pull(opts)
   },
 
   async 'conflicts.list'(ctx) {
     const conflicts = await ctx.repo.getConflicts()
-    // 三方内容可能很大，超限则只保留 oid
+    // The three sides can be large; past the limit only the oid is kept
     for (const c of conflicts) {
       for (const side of ['base', 'ours', 'theirs'] as const) {
         const s = c[side]
@@ -207,7 +208,7 @@ export const OPS: {
 
   async 'conflicts.resolve'(ctx, params) {
     if (!Array.isArray(params.resolutions)) {
-      throw new TransportError('INVALID_ARGUMENT', '参数 resolutions 必须是数组')
+      throw new TransportError('INVALID_ARGUMENT', 'resolutions must be an array')
     }
     return ctx.repo.resolveConflicts(params.resolutions)
   },
@@ -215,7 +216,7 @@ export const OPS: {
   async 'conflicts.resolveByHunks'(ctx, params) {
     const path = requireString(params as Record<string, unknown>, 'path')
     if (!Array.isArray(params.choices)) {
-      throw new TransportError('INVALID_ARGUMENT', '参数 choices 必须是数组')
+      throw new TransportError('INVALID_ARGUMENT', 'choices must be an array')
     }
     return ctx.repo.resolveByHunks(path, params.choices)
   },

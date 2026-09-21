@@ -1,9 +1,8 @@
 {
-  "name": "@aaxis/gitkit",
-  "version": "0.0.0",
+  "name": "@treenwang/gitkit",
+  "version": "0.1.0",
   "description": "Embeddable server-side git operations with sparse checkout, worktree-isolated concurrency, structured conflict resolution, and optional GitHub PR integration.",
-  "license": "UNLICENSED",
-  "private": false,
+  "license": "MIT",
   "keywords": [
     "git",
     "sparse-checkout",
@@ -47,5 +46,8 @@
       "optional": true
     }
   },
-  "sideEffects": false
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  }
 }

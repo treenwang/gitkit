@@ -4,10 +4,11 @@ import { resolveWithin } from '../domain/path-guard'
 import { GitOpError, type SparsePath } from '../types'
 
 /**
- * 受 PathGuard 约束的文件访问。
+ * File access constrained by PathGuard.
  *
- * PathGuard 是纯函数、无法解析符号链接；本类在真正访问前额外用 realpath
- * 复核，堵住"经符号链接逃逸 worktree"这条路。
+ * PathGuard is a pure function and cannot resolve symlinks, so this class
+ * re-checks with realpath immediately before touching anything, closing the
+ * "escape the worktree through a symlink" route.
  */
 export class FsGateway {
   constructor(
@@ -23,13 +24,13 @@ export class FsGateway {
       real = await realpath(probe)
     } catch (e) {
       if (mustExist) throw e
-      // 父目录尚不存在，稍后 mkdir 创建；路径本身已由 PathGuard 校验
+      // Parent directory does not exist yet; mkdir creates it later. The path itself is already validated by PathGuard.
       return abs
     }
     const rootReal = await realpath(this.dir)
     const rel2 = relative(rootReal, real)
     if (rel2.startsWith('..') || resolve(rootReal, rel2) !== real) {
-      throw new GitOpError('PATH_TRAVERSAL', `路径经符号链接逃出 worktree: ${rel}`)
+      throw new GitOpError('PATH_TRAVERSAL', `path escapes the worktree through a symlink: ${rel}`)
     }
     return abs
   }
@@ -48,7 +49,7 @@ export class FsGateway {
     await writeFile(abs, content, 'utf8')
   }
 
-  /** 二进制安全的写入 —— 解冲突时按 blob 原样落盘。 */
+  /** Binary-safe write - conflict resolution writes blobs back verbatim. */
   async writeBuffer(rel: string, content: Buffer): Promise<void> {
     const abs = await this.#safeAbs(rel, false)
     await mkdir(dirname(abs), { recursive: true })
@@ -68,7 +69,7 @@ export class FsGateway {
     }
   }
 
-  /** 递归列出相对路径；跳过 .git、符号链接与 sparse 范围外的内容。 */
+  /** Recursively list relative paths, skipping .git, symlinks, and anything outside the sparse range. */
   async listFiles(rel?: string): Promise<string[]> {
     const roots = rel
       ? [rel]

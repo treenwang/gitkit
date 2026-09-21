@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gitkit playground</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --fg: #1c1b1a; --muted: #6f6b66; --line: #e2dfdb;
+    --panel: #fff; --accent: #2f6f4e; --danger: #a33a2a; --code: #f5f3f0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17161a; --fg: #ece9e4; --muted: #9a938c; --line: #2f2d33;
+      --panel: #1f1e23; --accent: #6fbf8e; --danger: #e08b7a; --code: #26242b;
+    }
+  }
+  * { box-sizing: border-box }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.55 ui-sans-serif, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  header { padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; align-items: center; flex-wrap: wrap }
+  h1 { font-size: 15px; margin: 0 10px 0 0; font-weight: 650 }
+  main { display: grid; grid-template-columns: 240px 1fr 320px; gap: 0; height: calc(100vh - 53px) }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; height: auto } }
+  section { padding: 14px 16px; overflow: auto; border-right: 1px solid var(--line) }
+  section:last-child { border-right: 0 }
+  h2 { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px }
+  button {
+    font: inherit; padding: 5px 11px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--panel); color: var(--fg); cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--muted) }
+  button:disabled { opacity: .45; cursor: not-allowed }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff }
+  input, textarea {
+    font: inherit; background: var(--panel); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; width: 100%;
+  }
+  textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; min-height: 320px; resize: vertical }
+  ul { list-style: none; margin: 0; padding: 0 }
+  li { padding: 3px 0 }
+  .file { cursor: pointer; color: var(--fg); background: none; border: 0; padding: 2px 0; text-align: left; width: 100% }
+  .file:hover { color: var(--accent) }
+  .file[aria-current="true"] { color: var(--accent); font-weight: 600 }
+  .muted { color: var(--muted) }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px }
+  pre { background: var(--code); padding: 10px; border-radius: 6px; overflow: auto; font-size: 12px; margin: 0 0 10px }
+  .log { font-family: ui-monospace, Menlo, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word }
+  .log > div { padding: 3px 0; border-bottom: 1px solid var(--line) }
+  .err { color: var(--danger) }
+  .ok { color: var(--accent) }
+  code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 12.5px }
+</style>
+</head>
+<body>
+<header>
+  <h1>gitkit playground</h1>
+  <input id="branch" placeholder="Branch name (blank to generate one)" style="width: 260px">
+  <button id="open" class="primary">Open session</button>
+  <button id="close" disabled>Close</button>
+  <span id="meta" class="muted"></span>
+</header>
+
+<main>
+  <section>
+    <h2>Files</h2>
+    <div class="row"><button id="refresh" disabled>Refresh</button></div>
+    <ul id="files"></ul>
+  </section>
+
+  <section>
+    <h2>Editor</h2>
+    <div class="row">
+      <span id="current" class="muted">No file selected</span>
+      <button id="save" disabled>Save</button>
+    </div>
+    <textarea id="editor" disabled placeholder="Pick a file on the left"></textarea>
+    <h2 style="margin-top:16px">Changes</h2>
+    <div class="row">
+      <button id="changes" disabled>List changes</button>
+      <button id="diff" disabled>Show diff</button>
+    </div>
+    <pre id="diffOut" class="muted">—</pre>
+  </section>
+
+  <section>
+    <h2>Commit and push</h2>
+    <div class="row"><input id="message" placeholder="commit message" value="docs: from playground"></div>
+    <div class="row">
+      <button id="commit" disabled>commit</button>
+      <button id="pull" disabled>pull</button>
+    </div>
+    <div class="row"><input id="prTitle" placeholder="Pull request title (blank to push only)"></div>
+    <div class="row"><button id="push" disabled class="primary">push</button></div>
+
+    <h2 style="margin-top:16px">Conflicts</h2>
+    <div class="row">
+      <button id="conflicts" disabled>List conflicts</button>
+      <button id="takeOurs" disabled>Take ours</button>
+      <button id="takeTheirs" disabled>Take theirs</button>
+    </div>
+    <div class="row">
+      <button id="continue" disabled>continue (rebase only)</button>
+      <button id="abort" disabled>abort</button>
+    </div>
+    <p class="muted" style="margin:0;font-size:12.5px">
+      Conclude a merge with <code>commit</code> above, then push. Only a rebase uses continue.
+    </p>
+
+    <h2 style="margin-top:16px">Log</h2>
+    <div id="log" class="log"></div>
+  </section>
+</main>
+
+<script type="module">
+import { GitkitClient } from '/vendor/gitkit-client.js'
+
+const $ = (id) => document.getElementById(id)
+const logEl = $('log')
+let client = null
+let sessionId = null
+let current = null      // { path, etag }
+let conflictPaths = []
+
+function log(msg, kind) {
+  const div = document.createElement('div')
+  if (kind) div.className = kind
+  div.textContent = `${new Date().toLocaleTimeString()}  ${msg}`
+  logEl.prepend(div)
+}
+
+/** Every call goes through here so the GitkitClientError code shows up verbatim —
+    that code is the thing worth watching when you integrate. */
+async function call(op, params = {}) {
+  log(`→ ${op}`)
+  try {
+    const result = await client.call(op, params)
+    log(`← ${op} ok`, 'ok')
+    return result
+  } catch (e) {
+    log(`✗ ${op}  [${e.code ?? '?'}] ${e.message}`, 'err')
+    throw e
+  }
+}
+
+function setBusy(disabled) {
+  for (const id of ['refresh','changes','diff','commit','pull','push','conflicts','takeOurs','takeTheirs','continue','abort','close'])
+    $(id).disabled = disabled
+  $('editor').disabled = disabled || !current
+  $('save').disabled = disabled || !current
+}
+
+$('open').onclick = async () => {
+  $('open').disabled = true
+  try {
+    const res = await fetch('/demo/session', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ branch: $('branch').value }),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(`${data.code ?? ''} ${data.message ?? ''}`)
+    sessionId = data.sessionId
+    client = new GitkitClient({ baseUrl: '/api/gitkit', sessionId })
+    $('meta').textContent = `${data.branch} · checked out ${data.sparsePaths.join(', ')} · base ${data.base}`
+    log(`session open: ${data.branch}`, 'ok')
+    setBusy(false)
+    await listFiles()
+    const s = await call('status', {})
+    log(`status ${JSON.stringify(s)}`)
+  } catch (e) {
+    log(`could not open a session: ${e.message}`, 'err')
+    $('open').disabled = false
+  }
+}
+
+$('close').onclick = async () => {
+  await fetch(`/demo/session/${sessionId}/close`, { method: 'POST' })
+  log('session closed, worktree released', 'ok')
+  client = null; sessionId = null; current = null
+  $('files').innerHTML = ''; $('editor').value = ''; $('meta').textContent = ''
+  setBusy(true); $('open').disabled = false
+}
+
+// files.list returns the files inside the sparse range as a flat list of full
+// relative paths — there are no directory entries. Each carries a status, so
+// modified files are visible in the list itself.
+async function listFiles() {
+  const { entries } = await call('files.list', {})
+  const ul = $('files')
+  ul.innerHTML = ''
+  if (!entries.length) {
+    ul.innerHTML = '<li class="muted">(no files inside the sparse range)</li>'
+    return
+  }
+  for (const e of entries) {
+    const li = document.createElement('li')
+    const b = document.createElement('button')
+    b.className = 'file'
+    b.textContent = e.status === 'clean' ? e.path : `${e.path}  ·${e.status}`
+    b.onclick = () => openFile(e.path, b)
+    li.append(b)
+    ul.append(li)
+  }
+}
+
+async function openFile(path, btn) {
+  const file = await call('files.read', { path })
+  if (file.binary) { log(`${path} is binary and cannot be edited as text`, 'err'); return }
+  current = { path, etag: file.etag }
+  $('editor').value = file.content
+  $('editor').disabled = false
+  $('save').disabled = false
+  $('current').textContent = `${path}${file.truncated ? ' (truncated)' : ''}`
+  for (const el of document.querySelectorAll('.file')) el.removeAttribute('aria-current')
+  if (btn) btn.setAttribute('aria-current', 'true')
+}
+
+// baseEtag: if someone changed the file first this comes back as STALE_ETAG
+// instead of silently overwriting their work
+$('save').onclick = async () => {
+  const { etag } = await call('files.write', {
+    path: current.path, content: $('editor').value, baseEtag: current.etag,
+  })
+  current.etag = etag
+  log(`${current.path} written`, 'ok')
+}
+
+$('refresh').onclick = listFiles
+
+$('changes').onclick = async () => {
+  const { files } = await call('changes.list', {})
+  $('diffOut').textContent = files.length
+    ? files.map((f) => `${f.status}\t${f.path}`).join('\n')
+    : '(no changes)'
+}
+
+$('diff').onclick = async () => {
+  const { patch, truncated } = await call('changes.diff', current ? { path: current.path } : {})
+  $('diffOut').textContent = (patch || '(no diff)') + (truncated ? '\n... truncated' : '')
+}
+
+$('commit').onclick = async () => {
+  const r = await call('commit', { message: $('message').value })
+  log(r.changed ? `commit ${r.sha.slice(0, 8)}` : 'nothing to commit', r.changed ? 'ok' : null)
+}
+
+$('pull').onclick = async () => {
+  const r = await call('sync.pull', {})
+  log(r.conflicted ? 'pulled with conflicts - list them on the right' : 'in sync, no conflicts', r.conflicted ? 'err' : 'ok')
+}
+
+// The point of push: a rejection or a conflict is a return value, not an exception
+$('push').onclick = async () => {
+  const title = $('prTitle').value.trim()
+  const r = await call('push', title ? { createPR: { title, base: 'main' } } : {})
+  // Rejected, conflicted and auth failures all arrive as r.ok === false plus r.reason
+  log(r.ok ? `pushed${r.pr ? `, PR #${r.pr.number}` : ''}` : `push did not land: ${r.reason}`, r.ok ? 'ok' : 'err')
+  $('diffOut').textContent = JSON.stringify(r, null, 2)
+}
+
+$('conflicts').onclick = async () => {
+  const { conflicts } = await call('conflicts.list', {})
+  conflictPaths = conflicts.map((c) => c.path)
+  $('diffOut').textContent = conflicts.length
+    ? JSON.stringify(conflicts, null, 2)
+    : '(no conflicts)'
+}
+
+const resolveAll = (take) => async () => {
+  if (!conflictPaths.length) { log('click "List conflicts" first', 'err'); return }
+  const r = await call('conflicts.resolve', {
+    resolutions: conflictPaths.map((path) => ({ path, take })),
+  })
+  if (r.remaining.length) {
+    log(`${r.remaining.length} still unresolved`, 'err')
+    return
+  }
+  // How you conclude depends on what is in progress: a merge takes a commit,
+  // a rebase takes continue
+  const st = await call('status', {})
+  log(st.operation === 'rebase'
+    ? 'conflicts resolved, rebase in progress -> click continue'
+    : 'conflicts resolved, merge in progress -> click commit, then push', 'ok')
+}
+$('takeOurs').onclick = resolveAll('ours')
+$('takeTheirs').onclick = resolveAll('theirs')
+
+$('continue').onclick = async () => {
+  const r = await call('conflicts.continue', {})
+  log(`continue -> ${JSON.stringify(r)}`, r.conflicted ? 'err' : 'ok')
+}
+$('abort').onclick = async () => {
+  await call('conflicts.abort', {})
+  log('aborted, back to a clean state', 'ok')
+}
+
+setBusy(true)
+log('start by clicking "Open session"')
+</script>
+</body>
+</html>

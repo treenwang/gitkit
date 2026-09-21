@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { existsSync, writeFileSync } from 'node:fs'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { RepoManager } from '../../src/api/repo-manager'
 import type { RepoStore } from '../../src/api/repo-store'
@@ -25,7 +25,7 @@ function codeOf(p: Promise<unknown>): Promise<string> {
   return p.then(() => 'NO_THROW', (e: GitOpError) => e.code)
 }
 
-/** 制造冲突：我方改动 + 远端改动，然后 pull。 */
+/** Manufacture a conflict: change our side, change the remote, then pull. */
 async function conflict(
   ours: Record<string, string | null>,
   theirs: Record<string, string | null>,
@@ -41,8 +41,8 @@ async function conflict(
   return repo.getConflicts()
 }
 
-describe('getConflicts —— 五类冲突', () => {
-  test('both_modified：带 hunks 与三方内容', async () => {
+describe('getConflicts - the five kinds of conflict', () => {
+  test('both_modified: carries hunks and all three sides', async () => {
     const cs = await conflict(
       { 'docs/both.txt': 'l1\nOUR2\nl3\nl4\nl5\n' },
       { 'docs/both.txt': 'l1\nTHEIR2\nl3\nl4\nl5\n' },
@@ -60,7 +60,7 @@ describe('getConflicts —— 五类冲突', () => {
     expect(c.raw).toContain('<<<<<<<')
   })
 
-  test('both_added：无 base，有 hunks', async () => {
+  test('both_added: no base, but hunks', async () => {
     const cs = await conflict(
       { 'docs/new.txt': 'ours-new\n' },
       { 'docs/new.txt': 'theirs-new\n' },
@@ -72,7 +72,7 @@ describe('getConflicts —— 五类冲突', () => {
     expect(c.hunks!.length).toBeGreaterThan(0)
   })
 
-  test('deleted_by_them：无标记、无 hunks，但有 base 与 ours', async () => {
+  test('deleted_by_them: no markers and no hunks, but base and ours', async () => {
     const cs = await conflict(
       { 'docs/delmod.txt': 'our-mod\n' },
       { 'docs/delmod.txt': null },
@@ -83,11 +83,11 @@ describe('getConflicts —— 五类冲突', () => {
     expect(c.theirs).toBeUndefined()
     expect(c.ours!.content).toBe('our-mod\n')
     expect(c.base!.content).toBe('del\n')
-    // 工作区保留的是 ours 的完整内容，没有冲突标记
+    // The working tree holds our content in full, with no conflict markers
     expect(await repo.readFile('docs/delmod.txt')).toBe('our-mod\n')
   })
 
-  test('deleted_by_us：有 base 与 theirs，无 ours', async () => {
+  test('deleted_by_us: base and theirs, but no ours', async () => {
     const cs = await conflict(
       { 'docs/moddel.txt': null },
       { 'docs/moddel.txt': 'their-mod\n' },
@@ -99,7 +99,7 @@ describe('getConflicts —— 五类冲突', () => {
     expect(c.hunks).toBeUndefined()
   })
 
-  test('rename/rename：三条单 stage 记录归并为一条', async () => {
+  test('rename/rename: three single-stage entries merge into one', async () => {
     await repo.git(['mv', 'docs/orig.txt', 'docs/our-name.txt'])
     await repo.commit({ message: 'rename ours' })
     pushToRemote(root, bare, { 'docs/orig.txt': null, 'docs/their-name.txt': 'rename me\n' },
@@ -114,7 +114,7 @@ describe('getConflicts —— 五类冲突', () => {
     expect(c.hunks).toBeUndefined()
   })
 
-  test('二进制冲突：binary=true，不填 content，无 hunks', async () => {
+  test('a binary conflict: binary=true, no content, no hunks', async () => {
     pushToRemote(root, bare, {}, { message: 'noop' })
     writeFileSync(join(repo.dir, 'docs', 'b.bin'), Buffer.from([0, 1, 2]))
     await repo.commit({ message: 'ours bin' })
@@ -132,13 +132,13 @@ describe('getConflicts —— 五类冲突', () => {
     expect(c.hunks).toBeUndefined()
   })
 
-  test('无冲突时返回空数组', async () => {
+  test('returns an empty array when there are no conflicts', async () => {
     expect(await repo.getConflicts()).toEqual([])
   })
 })
 
 describe('resolveConflicts', () => {
-  test("take: 'ours' 写回我方内容并解除冲突", async () => {
+  test("take: 'ours' writes our content back and clears the conflict", async () => {
     await conflict(
       { 'docs/both.txt': 'l1\nOUR2\nl3\nl4\nl5\n' },
       { 'docs/both.txt': 'l1\nTHEIR2\nl3\nl4\nl5\n' },
@@ -169,7 +169,7 @@ describe('resolveConflicts', () => {
     expect(await repo.readFile('docs/both.txt')).toBe('l1\nl2\nl3\nl4\nl5\n')
   })
 
-  test('content 写回手改内容', async () => {
+  test('content writes hand-edited content back', async () => {
     await conflict(
       { 'docs/both.txt': 'l1\nOUR2\nl3\nl4\nl5\n' },
       { 'docs/both.txt': 'l1\nTHEIR2\nl3\nl4\nl5\n' },
@@ -179,7 +179,7 @@ describe('resolveConflicts', () => {
     expect((await repo.getConflicts())).toEqual([])
   })
 
-  test("delete/modify 用 take: 'delete' 解决", async () => {
+  test("delete/modify is resolved with take: 'delete'", async () => {
     await conflict({ 'docs/delmod.txt': 'our-mod\n' }, { 'docs/delmod.txt': null })
     const r = await repo.resolveConflicts([{ path: 'docs/delmod.txt', take: 'delete' }])
     expect(r.remaining).toEqual([])
@@ -187,20 +187,20 @@ describe('resolveConflicts', () => {
     await repo.commit({ message: 'deleted' })
   })
 
-  test("delete/modify 用 take: 'ours' 保留我方版本", async () => {
+  test("delete/modify with take: 'ours' keeps our version", async () => {
     await conflict({ 'docs/delmod.txt': 'our-mod\n' }, { 'docs/delmod.txt': null })
     await repo.resolveConflicts([{ path: 'docs/delmod.txt', take: 'ours' }])
     expect(await repo.readFile('docs/delmod.txt')).toBe('our-mod\n')
     await repo.commit({ message: 'kept ours' })
   })
 
-  test("deleted_by_them 选 'theirs' 时抛错并提示改用 delete", async () => {
+  test("choosing 'theirs' on deleted_by_them throws and points at delete", async () => {
     await conflict({ 'docs/delmod.txt': 'our-mod\n' }, { 'docs/delmod.txt': null })
     expect(await codeOf(repo.resolveConflicts([{ path: 'docs/delmod.txt', take: 'theirs' }])))
       .toBe('INVALID_ARGUMENT')
   })
 
-  test('多个冲突部分解决时 remaining 报告剩余', async () => {
+  test('with several conflicts partly resolved, remaining reports what is left', async () => {
     await conflict(
       { 'docs/both.txt': 'l1\nOUR2\nl3\nl4\nl5\n', 'docs/moddel.txt': null },
       { 'docs/both.txt': 'l1\nTHEIR2\nl3\nl4\nl5\n', 'docs/moddel.txt': 'their-mod\n' },
@@ -209,7 +209,7 @@ describe('resolveConflicts', () => {
     expect(r.remaining).toEqual(['docs/moddel.txt'])
   })
 
-  test('路径不在冲突集合中时抛 INVALID_ARGUMENT', async () => {
+  test('a path outside the conflict set throws INVALID_ARGUMENT', async () => {
     await conflict(
       { 'docs/both.txt': 'l1\nOUR2\nl3\nl4\nl5\n' },
       { 'docs/both.txt': 'l1\nTHEIR2\nl3\nl4\nl5\n' },
@@ -218,7 +218,7 @@ describe('resolveConflicts', () => {
       .toBe('INVALID_ARGUMENT')
   })
 
-  test('二进制冲突选边后内容按字节一致', async () => {
+  test('picking a side on a binary conflict gives byte-identical content', async () => {
     pushToRemote(root, bare, {}, { message: 'noop' })
     writeFileSync(join(repo.dir, 'docs', 'b.bin'), Buffer.from([0, 1, 2, 255]))
     await repo.commit({ message: 'ours bin' })
@@ -229,11 +229,11 @@ describe('resolveConflicts', () => {
     await repo.pull({ ref: 'origin/main' })
 
     await repo.resolveConflicts([{ path: 'docs/b.bin', take: 'theirs' }])
-    const bytes = await Bun.file(join(repo.dir, 'docs', 'b.bin')).bytes()
+    const bytes = readFileSync(join(repo.dir, 'docs', 'b.bin'))
     expect([...bytes]).toEqual([0, 9, 9, 9])
   })
 
-  test('rename 冲突选 ours 后只保留我方路径', async () => {
+  test('choosing ours on a rename conflict keeps only our path', async () => {
     await repo.git(['mv', 'docs/orig.txt', 'docs/our-name.txt'])
     await repo.commit({ message: 'rename ours' })
     pushToRemote(root, bare, { 'docs/orig.txt': null, 'docs/their-name.txt': 'rename me\n' },
@@ -250,7 +250,7 @@ describe('resolveConflicts', () => {
 })
 
 describe('resolveByHunks', () => {
-  test('逐块选边', async () => {
+  test('choosing a side per hunk', async () => {
     await conflict(
       { 'docs/both.txt': 'l1\nOUR2\nl3\nl4\nOUR5\n' },
       { 'docs/both.txt': 'l1\nTHEIR2\nl3\nl4\nTHEIR5\n' },
@@ -261,7 +261,7 @@ describe('resolveByHunks', () => {
     expect(await repo.readFile('docs/both.txt')).toBe('l1\nOUR2\nl3\nl4\nTHEIR5\n')
   })
 
-  test('choices 数量不符时抛 INVALID_ARGUMENT', async () => {
+  test('a mismatched number of choices throws INVALID_ARGUMENT', async () => {
     await conflict(
       { 'docs/both.txt': 'l1\nOUR2\nl3\nl4\nOUR5\n' },
       { 'docs/both.txt': 'l1\nTHEIR2\nl3\nl4\nTHEIR5\n' },
@@ -270,15 +270,15 @@ describe('resolveByHunks', () => {
       .toBe('INVALID_ARGUMENT')
   })
 
-  test('对无标记的冲突调用时抛 INVALID_ARGUMENT', async () => {
+  test('calling it on a conflict with no markers throws INVALID_ARGUMENT', async () => {
     await conflict({ 'docs/delmod.txt': 'our-mod\n' }, { 'docs/delmod.txt': null })
     expect(await codeOf(repo.resolveByHunks('docs/delmod.txt', ['ours'])))
       .toBe('INVALID_ARGUMENT')
   })
 })
 
-describe('merge 状态从磁盘实时推导', () => {
-  test('attachSession 后仍能看到冲突现场', async () => {
+describe('merge state is derived from disk on demand', () => {
+  test('the conflict state is still visible after attachSession', async () => {
     await conflict(
       { 'docs/both.txt': 'l1\nOUR2\nl3\nl4\nl5\n' },
       { 'docs/both.txt': 'l1\nTHEIR2\nl3\nl4\nl5\n' },
@@ -291,7 +291,7 @@ describe('merge 状态从磁盘实时推导', () => {
     await re.dispose()
   })
 
-  test('listSessions 把冲突中的 worktree 标为 conflicted', async () => {
+  test('listSessions marks a conflicted worktree as conflicted', async () => {
     await conflict(
       { 'docs/both.txt': 'l1\nOUR2\nl3\nl4\nl5\n' },
       { 'docs/both.txt': 'l1\nTHEIR2\nl3\nl4\nl5\n' },

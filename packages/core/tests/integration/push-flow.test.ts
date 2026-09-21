@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { RepoManager } from '../../src/api/repo-manager'
@@ -22,8 +22,8 @@ const SESSION = (branch: string) => ({
   branch, sparsePaths: ['docs'], author: AUTHOR,
 })
 
-describe('push 状态机', () => {
-  test('直接成功', async () => {
+describe('the push state machine', () => {
+  test('straightforward success', async () => {
     const repo = await store.createSession(SESSION('feat/p1'))
     await repo.writeFile('docs/x.md', 'x')
     await repo.commit({ message: 'x' })
@@ -32,13 +32,13 @@ describe('push 状态机', () => {
     await repo.dispose()
   })
 
-  test('被拒 → 自动 pull → 无冲突 → 重试成功', async () => {
+  test('rejected, pulls automatically, no conflict, retry succeeds', async () => {
     const repo = await store.createSession(SESSION('feat/p2'))
     await repo.writeFile('docs/x.md', 'v1')
     await repo.commit({ message: 'v1' })
     expect((await repo.push()).ok).toBe(true)
 
-    // 别人在同一分支上推了不冲突的改动
+    // Someone else pushed a non-conflicting change to the same branch
     pushToRemote(root, bare, { 'docs/other.md': 'other' },
       { branch: 'feat/p2', message: 'theirs' })
 
@@ -46,12 +46,12 @@ describe('push 状态机', () => {
     await repo.commit({ message: 'v2' })
     const r = await repo.push()
     expect(r.ok).toBe(true)
-    // 对方的改动已被合进来
+    // Their change has been merged in
     expect(await repo.readFile('docs/other.md')).toBe('other')
     await repo.dispose()
   })
 
-  test('被拒 → pull 有冲突 → 返回 conflict 并停在 merge 中', async () => {
+  test('rejected, the pull conflicts, returns conflict and stops mid-merge', async () => {
     const repo = await store.createSession(SESSION('feat/p3'))
     await repo.writeFile('docs/x.md', 'v1')
     await repo.commit({ message: 'v1' })
@@ -74,7 +74,7 @@ describe('push 状态机', () => {
     await repo.dispose()
   })
 
-  test('解完冲突后再 push 成功', async () => {
+  test('pushing again after resolving the conflicts succeeds', async () => {
     const repo = await store.createSession(SESSION('feat/p4'))
     await repo.writeFile('docs/x.md', 'v1')
     await repo.commit({ message: 'v1' })
@@ -92,7 +92,7 @@ describe('push 状态机', () => {
     await repo.dispose()
   })
 
-  test('retryOnReject: false 时被拒直接返回 rejected，不 pull', async () => {
+  test('with retryOnReject: false a rejection returns rejected without pulling', async () => {
     const repo = await store.createSession(SESSION('feat/p5'))
     await repo.writeFile('docs/x.md', 'v1')
     await repo.commit({ message: 'v1' })
@@ -105,12 +105,12 @@ describe('push 状态机', () => {
     const r = await repo.push({ retryOnReject: false })
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.reason).toBe('rejected')
-    // 没有 pull，所以对方的文件不在
+    // Nothing was pulled, so their file is absent
     expect(await repo.exists('docs/other.md')).toBe(false)
     await repo.dispose()
   })
 
-  test('session 级 retryOnReject: false 生效（无需在 push 层重复指定）', async () => {
+  test('retryOnReject: false at the session level applies without repeating it per push', async () => {
     const repo = await store.createSession({ ...SESSION('feat/p6b'), retryOnReject: false })
     await repo.writeFile('docs/x.md', 'v1')
     await repo.commit({ message: 'v1' })
@@ -123,12 +123,12 @@ describe('push 状态机', () => {
     const r = await repo.push()
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.reason).toBe('rejected')
-    // 未重试，所以没有 pull 到对方的文件
+    // No retry, so their file was never pulled in
     expect(await repo.exists('docs/other.md')).toBe(false)
     await repo.dispose()
   })
 
-  test('session 级 retryOnReject 可被单次 push 覆盖', async () => {
+  test('a single push can override the session-level retryOnReject', async () => {
     const repo = await store.createSession({ ...SESSION('feat/p6'), retryOnReject: false })
     await repo.writeFile('docs/x.md', 'v1')
     await repo.commit({ message: 'v1' })
@@ -141,7 +141,7 @@ describe('push 状态机', () => {
     await repo.dispose()
   })
 
-  test('未配置 forge 时请求建 PR 抛 FORGE_NOT_INSTALLED', async () => {
+  test('asking for a pull request without a forge throws FORGE_NOT_INSTALLED', async () => {
     const repo = await store.createSession(SESSION('feat/p7'))
     await repo.writeFile('docs/x.md', 'x')
     await repo.commit({ message: 'x' })
@@ -153,8 +153,8 @@ describe('push 状态机', () => {
   })
 })
 
-describe('并发 push', () => {
-  test('12 个 session 并发 push 各自的分支全部成功', async () => {
+describe('concurrent pushes', () => {
+  test('twelve sessions pushing their own branches concurrently all succeed', async () => {
     const repos = await Promise.all(
       Array.from({ length: 12 }, (_, i) => store.createSession(SESSION(`feat/cp${i}`))),
     )
@@ -170,7 +170,7 @@ describe('并发 push', () => {
     await Promise.all(repos.map((r) => r.dispose()))
   })
 
-  test('push 不写共享 .git/config（不依赖 upstream 跟踪）', async () => {
+  test('push does not write the shared .git/config and does not rely on upstream tracking', async () => {
     const repo = await store.createSession(SESSION('feat/noup'))
     await repo.writeFile('docs/x.md', 'x')
     await repo.commit({ message: 'x' })
@@ -186,8 +186,8 @@ describe('并发 push', () => {
   })
 })
 
-describe('withSession 退出契约', () => {
-  test('正常返回时释放 worktree', async () => {
+describe('the withSession exit contract', () => {
+  test('a normal return releases the worktree', async () => {
     let dir = ''
     const out = await store.withSession(SESSION('feat/w1'), async (repo) => {
       dir = repo.dir
@@ -200,7 +200,7 @@ describe('withSession 退出契约', () => {
     expect(store.activeSessions).toBe(0)
   })
 
-  test('回调抛错时也释放 worktree，并原样抛出原始错误', async () => {
+  test('a throwing callback still releases the worktree and rethrows the original error', async () => {
     let dir = ''
     await expect(
       store.withSession(SESSION('feat/w2'), async (repo) => {
@@ -212,7 +212,7 @@ describe('withSession 退出契约', () => {
     expect(store.activeSessions).toBe(0)
   })
 
-  test('退出时仍在 merge 中 → 保留 worktree 并抛 MERGE_IN_PROGRESS', async () => {
+  test('still mid-merge on exit keeps the worktree and throws MERGE_IN_PROGRESS', async () => {
     let dir = ''
     const code = await store
       .withSession(SESSION('feat/w3'), async (repo) => {
@@ -226,7 +226,7 @@ describe('withSession 退出契约', () => {
 
     expect(code).toBe('MERGE_IN_PROGRESS')
     expect(existsSync(dir)).toBe(true)
-    // 引用计数已释放，冲突现场仍可被接管
+    // The refcount is released while the conflict state remains available to take over
     expect(store.activeSessions).toBe(0)
     const re = await store.attachSession(dir)
     expect((await re.getConflicts()).map((c) => c.path)).toContain('docs/a.md')
@@ -234,7 +234,7 @@ describe('withSession 退出契约', () => {
     expect(existsSync(dir)).toBe(false)
   })
 
-  test('在回调内解完冲突则正常释放', async () => {
+  test('resolving the conflicts inside the callback releases normally', async () => {
     let dir = ''
     await store.withSession(SESSION('feat/w4'), async (repo) => {
       dir = repo.dir
@@ -251,7 +251,7 @@ describe('withSession 退出契约', () => {
 })
 
 describe('publish', () => {
-  test('一站式写文件 + commit + push', async () => {
+  test('one call for writing files, committing and pushing', async () => {
     const r = await store.publish({
       branch: 'feat/pub1',
       sparsePaths: ['docs'],
@@ -264,7 +264,7 @@ describe('publish', () => {
     expect(store.activeSessions).toBe(0)
   })
 
-  test('冲突时返回 conflict 结果并保留 worktree', async () => {
+  test('a conflict returns the conflict result and keeps the worktree', async () => {
     await store.publish({
       branch: 'feat/pub2', sparsePaths: ['docs'], author: AUTHOR,
       message: 'v1', files: [{ path: 'docs/x.md', content: 'v1' }],
@@ -288,7 +288,7 @@ describe('publish', () => {
     await re.dispose()
   })
 
-  test('publish 内部出错时释放 worktree', async () => {
+  test('a failure inside publish releases the worktree', async () => {
     await expect(store.publish({
       branch: 'feat/pub3', sparsePaths: ['docs'], author: AUTHOR,
       message: 'bad', files: [{ path: 'src/nope.ts', content: 'x' }],

@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { RepoManager, type GitRepo, type RepoStore } from '@aaxis/gitkit'
+import { RepoManager, type GitRepo, type RepoStore } from '@treenwang/gitkit'
 import { createHandler } from '../src/handler'
 import { etagOf } from '../src/ops'
 import {
@@ -34,8 +35,8 @@ async function call(op: string, params: Record<string, unknown> = {}): Promise<A
   return body as Any
 }
 
-describe('files 全链路（真 git）', () => {
-  test('read 返回内容与 etag', async () => {
+describe('files end to end, against real git', () => {
+  test('read returns the content and an etag', async () => {
     const r = await call('files.read', { path: 'docs/a.md' })
     expect(r.binary).toBe(false)
     expect(r.content).toBe('# a\n')
@@ -43,40 +44,40 @@ describe('files 全链路（真 git）', () => {
     expect(r.truncated).toBe(false)
   })
 
-  test('write 后 read 回来一致，etag 更新', async () => {
+  test('reading after a write gives the same content and a new etag', async () => {
     const w = await call('files.write', { path: 'docs/a.md', content: '# changed\n' })
     expect(w.etag).toBe(etagOf('# changed\n'))
     expect((await call('files.read', { path: 'docs/a.md' })).content).toBe('# changed\n')
   })
 
-  test('write 新文件自动建目录', async () => {
+  test('writing a new file creates the directories', async () => {
     await call('files.write', { path: 'docs/deep/nested/x.md', content: 'x' })
     expect((await call('files.read', { path: 'docs/deep/nested/x.md' })).content).toBe('x')
   })
 
-  test('sparse 范围外 → 400 PATH_OUTSIDE_SPARSE', async () => {
+  test('outside the sparse range gives 400 PATH_OUTSIDE_SPARSE', async () => {
     const e = await call('files.read', { path: 'src/index.ts' }).catch((x: Any) => x)
     expect(e.code).toBe('PATH_OUTSIDE_SPARSE')
     expect(e.status).toBe(400)
   })
 
-  test('穿越路径 → 400 PATH_TRAVERSAL', async () => {
+  test('a traversal path gives 400 PATH_TRAVERSAL', async () => {
     expect((await call('files.write', { path: '../evil', content: 'x' }).catch((x: Any) => x)).code)
       .toBe('PATH_TRAVERSAL')
   })
 
-  test('二进制文件不返回 content', async () => {
-    await Bun.write(join(repo.dir, 'docs', 'b.bin'), new Uint8Array([0, 1, 2, 255]))
+  test('a binary file comes back without content', async () => {
+    writeFileSync(join(repo.dir, 'docs', 'b.bin'), new Uint8Array([0, 1, 2, 255]))
     const r = await call('files.read', { path: 'docs/b.bin' })
     expect(r).toEqual({ binary: true, size: 4 })
   })
 
-  test('delete 后文件消失', async () => {
+  test('the file is gone after delete', async () => {
     expect(await call('files.delete', { path: 'docs/a.md' })).toEqual({ deleted: true })
     expect((await call('files.read', { path: 'docs/a.md' }).catch((x: Any) => x)).status).toBe(500)
   })
 
-  test('list 标注改动状态', async () => {
+  test('list labels the change status', async () => {
     await call('files.write', { path: 'docs/a.md', content: 'changed' })
     await call('files.write', { path: 'docs/new.md', content: 'new' })
     const { entries } = await call('files.list')
@@ -87,16 +88,16 @@ describe('files 全链路（真 git）', () => {
   })
 })
 
-describe('乐观并发控制', () => {
-  test('baseEtag 一致时写入成功', async () => {
+describe('optimistic concurrency control', () => {
+  test('a matching baseEtag writes successfully', async () => {
     const { etag } = await call('files.read', { path: 'docs/a.md' })
     await call('files.write', { path: 'docs/a.md', content: 'v2', baseEtag: etag })
     expect((await call('files.read', { path: 'docs/a.md' })).content).toBe('v2')
   })
 
-  test('baseEtag 过期 → 409 STALE_ETAG，且带回服务端当前内容', async () => {
+  test('a stale baseEtag gives 409 STALE_ETAG and brings the server content back', async () => {
     const { etag } = await call('files.read', { path: 'docs/a.md' })
-    // 模拟"别处改了这个文件"
+    // Simulate the file being changed elsewhere
     await call('files.write', { path: 'docs/a.md', content: 'from elsewhere' })
 
     const e = await call('files.write', {
@@ -105,16 +106,16 @@ describe('乐观并发控制', () => {
     expect(e.code).toBe('STALE_ETAG')
     expect(e.status).toBe(409)
     expect(e.body.error.current.content).toBe('from elsewhere')
-    // 关键：本次写入必须没有生效
+    // The important part: this write must not have landed
     expect((await call('files.read', { path: 'docs/a.md' })).content).toBe('from elsewhere')
   })
 
-  test('省略 baseEtag 时跳过检查（明知要覆盖的场景）', async () => {
+  test('omitting baseEtag skips the check, for when you mean to overwrite', async () => {
     await call('files.write', { path: 'docs/a.md', content: 'forced' })
     expect((await call('files.read', { path: 'docs/a.md' })).content).toBe('forced')
   })
 
-  test('ifNotExists 命中已存在文件 → 409 ALREADY_EXISTS', async () => {
+  test('ifNotExists against an existing file gives 409 ALREADY_EXISTS', async () => {
     const e = await call('files.write', {
       path: 'docs/a.md', content: 'x', ifNotExists: true,
     }).catch((x: Any) => x)
@@ -122,7 +123,7 @@ describe('乐观并发控制', () => {
     expect((await call('files.read', { path: 'docs/a.md' })).content).toBe('# a\n')
   })
 
-  test('pull 引入的改动会让编辑中的 baseEtag 失效（这正是该机制要防的）', async () => {
+  test('a change brought in by pull invalidates the baseEtag being edited, which is exactly what this guards against', async () => {
     const { etag } = await call('files.read', { path: 'docs/a.md' })
     pushToRemote(root, bare, { 'docs/a.md': '# from remote\n' }, { message: 'theirs' })
     await call('sync.pull', { strategy: 'merge', ref: 'origin/main' })
@@ -136,7 +137,7 @@ describe('乐观并发控制', () => {
 })
 
 describe('changes / diff / commit / push', () => {
-  test('changes.list 列出改动', async () => {
+  test('changes.list lists the changes', async () => {
     await call('files.write', { path: 'docs/a.md', content: 'changed' })
     await call('files.write', { path: 'docs/n.md', content: 'new' })
     const { files } = await call('changes.list')
@@ -145,7 +146,7 @@ describe('changes / diff / commit / push', () => {
     expect(by['docs/n.md']).toBe('added')
   })
 
-  test('changes.diff 返回补丁', async () => {
+  test('changes.diff returns the patch', async () => {
     await call('files.write', { path: 'docs/a.md', content: '# changed\n' })
     const { patch, truncated } = await call('changes.diff')
     expect(patch).toContain('-# a')
@@ -153,7 +154,7 @@ describe('changes / diff / commit / push', () => {
     expect(truncated).toBe(false)
   })
 
-  test('changes.diff 可限定单个文件', async () => {
+  test('changes.diff can be limited to one file', async () => {
     await call('files.write', { path: 'docs/a.md', content: 'x' })
     await call('files.write', { path: 'docs/api/b.md', content: 'y' })
     const { patch } = await call('changes.diff', { path: 'docs/api/b.md' })
@@ -161,7 +162,7 @@ describe('changes / diff / commit / push', () => {
     expect(patch).not.toContain('docs/a.md')
   })
 
-  test('commit → push 全链路', async () => {
+  test('commit then push, end to end', async () => {
     await call('files.write', { path: 'docs/a.md', content: '# committed\n' })
     const c = await call('commit', { message: 'update a' })
     expect(c.changed).toBe(true)
@@ -171,17 +172,17 @@ describe('changes / diff / commit / push', () => {
     expect(git(root, 'ls-remote', '--heads', bare)).toContain('refs/heads/feat/s')
   })
 
-  test('无改动时 commit 返回 changed: false', async () => {
+  test('commit with nothing changed returns changed: false', async () => {
     expect((await call('commit', { message: 'nothing' })).changed).toBe(false)
   })
 
-  test('缺 message → 400', async () => {
+  test('a missing message gives 400', async () => {
     expect((await call('commit', {}).catch((x: Any) => x)).status).toBe(400)
   })
 })
 
-describe('冲突链路', () => {
-  test('push 冲突 → 结构化冲突，且响应中无服务端路径', async () => {
+describe('the conflict path', () => {
+  test('a push conflict gives structured conflicts with no server paths in the response', async () => {
     await call('files.write', { path: 'docs/x.md', content: 'v1' })
     await call('commit', { message: 'v1' })
     await call('push', {})
@@ -226,7 +227,7 @@ describe('冲突链路', () => {
     expect((await call('push', {})).ok).toBe(true)
   })
 
-  test('conflicts.abort 回到干净状态', async () => {
+  test('conflicts.abort returns to a clean state', async () => {
     await call('files.write', { path: 'docs/a.md', content: '# ours\n' })
     await call('commit', { message: 'ours' })
     pushToRemote(root, bare, { 'docs/a.md': '# theirs\n' }, { message: 'theirs' })
@@ -236,8 +237,8 @@ describe('冲突链路', () => {
   })
 })
 
-describe('ref 参数注入防护', () => {
-  test('以 - 开头的 ref 被拒（否则会被 git 当作选项）', async () => {
+describe('guarding ref against argument injection', () => {
+  test('a ref starting with - is refused, since git would read it as an option', async () => {
     for (const ref of ['--upload-pack=touch /tmp/pwned', '--help']) {
       const e = await call('sync.pull', { ref }).catch((x: Any) => x)
       expect(e.code).toBe('INVALID_ARGUMENT')
@@ -245,19 +246,19 @@ describe('ref 参数注入防护', () => {
     }
   })
 
-  test('合法 ref 正常工作', async () => {
+  test('a legitimate ref works', async () => {
     pushToRemote(root, bare, { 'docs/pulled.md': 'from remote' }, { message: 'theirs' })
     expect(await call('sync.pull', { ref: 'origin/main' })).toEqual({ conflicted: false })
     expect((await call('files.read', { path: 'docs/pulled.md' })).content).toBe('from remote')
   })
 
-  test('非法 strategy 被拒', async () => {
+  test('an invalid strategy is refused', async () => {
     expect((await call('sync.pull', { strategy: 'evil' }).catch((x: Any) => x)).status).toBe(400)
   })
 })
 
-describe('体积上限', () => {
-  test('超过 maxContentBytes 的文件被截断并标记', async () => {
+describe('size limits', () => {
+  test('a file over maxContentBytes is truncated and marked as such', async () => {
     const big = 'x'.repeat(5000)
     await call('files.write', { path: 'docs/big.md', content: big })
     const small = createHandler({ resolveSession: () => repo, maxContentBytes: 100 })
@@ -269,13 +270,13 @@ describe('体积上限', () => {
     expect(body.truncated).toBe(true)
     expect(body.content).toHaveLength(100)
     expect(body.size).toBe(5000)
-    // etag 覆盖完整内容，而非截断后的内容
+    // The etag covers the whole content, not the truncated version
     expect(body.etag).toBe(etagOf(big))
   })
 })
 
-describe('并发写', () => {
-  test('同一 session 并发 10 个写请求全部成功', async () => {
+describe('concurrent writes', () => {
+  test('ten concurrent writes in one session all succeed', async () => {
     const results = await Promise.all(
       Array.from({ length: 10 }, (_, i) =>
         call('files.write', { path: `docs/c${i}.md`, content: `c${i}` })),

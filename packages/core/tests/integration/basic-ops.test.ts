@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { join } from 'node:path'
 import { RepoManager } from '../../src/api/repo-manager'
 import type { RepoStore } from '../../src/api/repo-store'
@@ -16,8 +16,8 @@ beforeEach(async () => {
 })
 afterEach(async () => { await repo.dispose().catch(() => {}); cleanup(root) })
 
-describe('基础操作', () => {
-  test('commit 产出 sha，作者信息正确', async () => {
+describe('basic operations', () => {
+  test('commit produces a sha with the right author', async () => {
     await repo.writeFile('docs/new.md', 'hi')
     const r = await repo.commit({ message: 'add new doc' })
     expect(r.changed).toBe(true)
@@ -26,31 +26,31 @@ describe('基础操作', () => {
       .toBe('Bot <bot@example.com>')
   })
 
-  test('无改动时 commit 返回 changed: false 且不报错', async () => {
+  test('commit with nothing changed returns changed: false without failing', async () => {
     const r = await repo.commit({ message: 'nothing' })
     expect(r.changed).toBe(false)
   })
 
-  test('commit 指定 paths 只提交这些文件', async () => {
+  test('commit with paths commits only those files', async () => {
     await repo.writeFile('docs/a1.md', '1')
     await repo.writeFile('docs/a2.md', '2')
     await repo.commit({ message: 'only a1', paths: ['docs/a1.md'] })
     expect((await repo.status()).untracked).toContain('docs/a2.md')
   })
 
-  test('commit 的 paths 越出 sparse 范围时抛错', async () => {
+  test('commit throws when its paths leave the sparse range', async () => {
     await repo.writeFile('docs/x.md', 'x')
     await expect(repo.commit({ message: 'm', paths: ['src/index.ts'] })).rejects.toThrow()
   })
 
-  test('pushBranch 成功后远端出现该分支', async () => {
+  test('after a successful pushBranch the remote has the branch', async () => {
     await repo.writeFile('docs/p.md', 'p')
     await repo.commit({ message: 'push me' })
     expect((await repo.pushBranch()).ok).toBe(true)
     expect(git(root, 'ls-remote', '--heads', bare)).toContain('refs/heads/feat/ops')
   })
 
-  test('远端分支被他人推进后再 push 返回 rejected', async () => {
+  test('pushing after someone else moved the remote branch returns rejected', async () => {
     await repo.writeFile('docs/p.md', 'v1')
     await repo.commit({ message: 'v1' })
     expect((await repo.pushBranch()).ok).toBe(true)
@@ -64,14 +64,14 @@ describe('基础操作', () => {
     if (!r.ok) expect(r.reason).toBe('rejected')
   })
 
-  test('pull 无冲突时把远端改动合进来', async () => {
+  test('a pull without conflicts merges the remote changes in', async () => {
     pushToRemote(root, bare, { 'docs/ext.md': 'from other' })
     const r = await repo.pull({ ref: 'origin/main' })
     expect(r.conflicted).toBe(false)
     expect(await repo.readFile('docs/ext.md')).toBe('from other')
   })
 
-  test('pull 冲突时返回 conflicted: true 而不抛错', async () => {
+  test('a conflicting pull returns conflicted: true rather than throwing', async () => {
     await repo.writeFile('docs/a.md', '# mine\n')
     await repo.commit({ message: 'mine' })
     pushToRemote(root, bare, { 'docs/a.md': '# theirs\n' })
@@ -82,7 +82,7 @@ describe('基础操作', () => {
     expect(st.merging).toBe(true)
   })
 
-  test('abortMerge 回到干净状态', async () => {
+  test('abortMerge returns to a clean state', async () => {
     await repo.writeFile('docs/a.md', '# mine\n')
     await repo.commit({ message: 'mine' })
     pushToRemote(root, bare, { 'docs/a.md': '# theirs\n' })
@@ -94,7 +94,7 @@ describe('基础操作', () => {
     expect(await repo.readFile('docs/a.md')).toBe('# mine\n')
   })
 
-  test('log 返回提交列表', async () => {
+  test('log returns the commit list', async () => {
     await repo.writeFile('docs/l.md', 'l')
     await repo.commit({ message: 'log entry' })
     const entries = await repo.log({ limit: 1 })
@@ -103,32 +103,32 @@ describe('基础操作', () => {
     expect(entries[0]!.author).toBe('Bot')
   })
 
-  test('diffSummary 返回改动文件名', async () => {
+  test('diffSummary returns the changed file names', async () => {
     await repo.writeFile('docs/d.md', 'd')
     await repo.commit({ message: 'd' })
     expect(await repo.diffSummary({ against: 'origin/main' })).toContain('docs/d.md')
   })
 
-  test('setSparsePaths 增量生效', async () => {
+  test('setSparsePaths takes effect incrementally', async () => {
     expect(await repo.exists('src/index.ts')).toBe(false)
-    // 接受字符串简写与对象形态混用
+    // The string shorthand and the object form can be mixed
     await repo.setSparsePaths(['docs', { path: 'src', requireChecks: true }])
     expect(await repo.readFile('src/index.ts')).toBe('export const x = 1\n')
     expect(repo.sparsePaths.map((p) => p.path)).toEqual(['docs', 'src'])
   })
 
-  test('setSparsePaths 收缩范围后，越界写入被拒', async () => {
+  test('after setSparsePaths narrows the range, writes outside it are refused', async () => {
     await repo.setSparsePaths(['docs', 'src'])
     expect(await repo.exists('src/index.ts')).toBe(true)
     await repo.setSparsePaths(['docs'])
     await expect(repo.writeFile('src/x.ts', 'x')).rejects.toThrow()
   })
 
-  test('listBranches 列出本地与远端分支', async () => {
+  test('listBranches lists local and remote branches', async () => {
     expect(await store.listBranches()).toContain('main')
   })
 
-  test('deleteBranch 删除未被 checkout 的分支', async () => {
+  test('deleteBranch removes a branch that is not checked out', async () => {
     const tmp = await store.createSession({ branch: 'feat/tmp', author: AUTHOR })
     await tmp.dispose()
     await store.deleteBranch('feat/tmp')

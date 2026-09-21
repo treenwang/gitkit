@@ -1,8 +1,9 @@
 /**
- * Express / NestJS(platform-express) 适配器。
+ * Adapter for Express and NestJS (platform-express).
  *
- * 只依赖 req/res 的结构，不 import express —— 避免在不用 express 的宿主里引入依赖，
- * 也避免与宿主的 express 版本冲突。
+ * It depends on the shape of req/res only and never imports express, which
+ * avoids pulling in a dependency for hosts that do not use it and avoids
+ * clashing with the host's express version.
  */
 type ExpressLikeRequest = {
   method: string
@@ -10,7 +11,7 @@ type ExpressLikeRequest = {
   url: string
   headers: Record<string, string | string[] | undefined>
   body?: unknown
-  /** 未被 body parser 消费时，直接读流。 */
+  /** Read the raw stream when no body parser has consumed it. */
   readable?: boolean
   on?: (event: string, cb: (chunk?: unknown) => void) => void
 }
@@ -31,7 +32,7 @@ export function toExpress(
       else if (Array.isArray(v)) headers.set(k, v.join(', '))
     }
 
-    // body-parser 已消费时用 req.body；否则读原始流
+    // Use req.body when body-parser consumed it, otherwise read the raw stream
     const body =
       req.body !== undefined && req.body !== null
         ? typeof req.body === 'string'

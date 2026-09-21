@@ -1,0 +1,22 @@
+{
+  "name": "@treenwang/gitkit-playground",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local end-to-end demo: Express hosting gitkit-server, browser calling through gitkit-client. Not published.",
+  "type": "module",
+  "scripts": {
+    "start": "tsx server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@treenwang/gitkit": "^0.1.0",
+    "@treenwang/gitkit-client": "^0.1.0",
+    "@treenwang/gitkit-server": "^0.1.0",
+    "@octokit/rest": "^21.1.1",
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.1",
+    "tsx": "^4.20.3"
+  }
+}

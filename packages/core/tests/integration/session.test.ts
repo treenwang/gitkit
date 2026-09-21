@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { RepoManager } from '../../src/api/repo-manager'
@@ -20,8 +20,8 @@ async function codeOf(p: Promise<unknown>): Promise<string> {
   return p.then(() => 'NO_THROW', (e: GitOpError) => e.code)
 }
 
-describe('session 生命周期', () => {
-  test('sparse 模式下只有指定目录落盘', async () => {
+describe('session lifecycle', () => {
+  test('in sparse mode only the named directories reach disk', async () => {
     const repo = await store.createSession({
       branch: 'feat/a', sparsePaths: ['docs'], author: AUTHOR,
     })
@@ -30,14 +30,14 @@ describe('session 生命周期', () => {
     await repo.dispose()
   })
 
-  test('全量模式下所有目录落盘', async () => {
+  test('in full mode every directory reaches disk', async () => {
     const repo = await store.createSession({ branch: 'feat/full', author: AUTHOR })
     expect(existsSync(join(repo.dir, 'src', 'index.ts'))).toBe(true)
     expect(existsSync(join(repo.dir, 'README.md'))).toBe(true)
     await repo.dispose()
   })
 
-  test('两个 session 的 sparse 配置互不污染', async () => {
+  test('two sessions sparse configurations do not contaminate each other', async () => {
     const a = await store.createSession({ branch: 'feat/a', sparsePaths: ['docs'], author: AUTHOR })
     const b = await store.createSession({ branch: 'feat/b', sparsePaths: ['src'], author: AUTHOR })
     expect(existsSync(join(a.dir, 'docs'))).toBe(true)
@@ -47,38 +47,39 @@ describe('session 生命周期', () => {
     await a.dispose(); await b.dispose()
   })
 
-  test('创建 sparse worktree 期间不发生全量 blob 拉取', async () => {
+  test('creating a sparse worktree does not fetch every blob', async () => {
     const repo = await store.createSession({
       branch: 'feat/a', sparsePaths: ['docs'], author: AUTHOR,
     })
     const missing = git(store.storeDir, 'rev-list', '--objects', '--missing=print', 'HEAD')
     const missingCount = missing.split('\n').filter((l) => l.startsWith('?')).length
-    // src/index.ts 与 assets/logo.bin 的 blob 应仍未被取回。
-    // 注意 README.md 会被取回：cone 模式的 sparse-checkout 总是包含仓库根目录的文件。
+    // The blobs for src/index.ts and assets/logo.bin should still be missing.
+    // README.md does get fetched: cone-mode sparse checkout always includes the
+    // files at the repository root.
     expect(missingCount).toBeGreaterThanOrEqual(2)
     expect(existsSync(join(repo.dir, 'src'))).toBe(false)
     expect(existsSync(join(repo.dir, 'assets'))).toBe(false)
     await repo.dispose()
   })
 
-  test('cone 模式下仓库根目录的文件仍会 checkout（git 固有行为）', async () => {
+  test('cone mode still checks out the repository root files - that is git behaviour', async () => {
     const repo = await store.createSession({
       branch: 'feat/cone', sparsePaths: ['docs'], author: AUTHOR,
     })
     expect(existsSync(join(repo.dir, 'README.md'))).toBe(true)
-    // 但本包的 PathGuard 仍拒绝对根文件的写入，避免越出声明的范围
+    // PathGuard still refuses writes to those root files, keeping inside the declared range
     expect(await codeOf(repo.writeFile('README.md', 'x'))).toBe('PATH_OUTSIDE_SPARSE')
     await repo.dispose()
   })
 
-  test('同一分支在两个 session 中 checkout → BRANCH_IN_USE', async () => {
+  test('checking one branch out in two sessions gives BRANCH_IN_USE', async () => {
     const a = await store.createSession({ branch: 'feat/dup', author: AUTHOR })
     expect(await codeOf(store.createSession({ branch: 'feat/dup', author: AUTHOR })))
       .toBe('BRANCH_IN_USE')
     await a.dispose()
   })
 
-  test("branchMode: 'create' 遇已存在分支 → BRANCH_EXISTS", async () => {
+  test("branchMode: 'create' on an existing branch gives BRANCH_EXISTS", async () => {
     const a = await store.createSession({ branch: 'feat/x', author: AUTHOR })
     await a.dispose()
     expect(await codeOf(
@@ -86,13 +87,13 @@ describe('session 生命周期', () => {
     )).toBe('BRANCH_EXISTS')
   })
 
-  test("branchMode: 'reuse' 遇不存在分支 → BRANCH_NOT_FOUND", async () => {
+  test("branchMode: 'reuse' on a missing branch gives BRANCH_NOT_FOUND", async () => {
     expect(await codeOf(
       store.createSession({ branch: 'feat/nope', branchMode: 'reuse', author: AUTHOR }),
     )).toBe('BRANCH_NOT_FOUND')
   })
 
-  test('默认 createOrReuse：不存在则建，存在则复用', async () => {
+  test('createOrReuse, the default: create when missing, reuse when present', async () => {
     const a = await store.createSession({ branch: 'feat/r', author: AUTHOR })
     await a.dispose()
     const b = await store.createSession({ branch: 'feat/r', author: AUTHOR })
@@ -100,7 +101,7 @@ describe('session 生命周期', () => {
     await b.dispose()
   })
 
-  test('复用远端已存在的分支', async () => {
+  test('reuses a branch that already exists on the remote', async () => {
     const a = await store.createSession({ branch: 'feat/remote', author: AUTHOR })
     await a.writeFile('docs/r.md', 'r')
     await a.commit({ message: 'r' })
@@ -113,7 +114,7 @@ describe('session 生命周期', () => {
     await b.dispose()
   })
 
-  test('dispose 后目录被删除，且幂等', async () => {
+  test('dispose removes the directory and is idempotent', async () => {
     const repo = await store.createSession({ branch: 'feat/d', author: AUTHOR })
     const dir = repo.dir
     await repo.dispose()
@@ -121,13 +122,13 @@ describe('session 生命周期', () => {
     expect(existsSync(dir)).toBe(false)
   })
 
-  test('dispose 后调用方法抛 WORKTREE_DISPOSED', async () => {
+  test('calling a method after dispose throws WORKTREE_DISPOSED', async () => {
     const repo = await store.createSession({ branch: 'feat/d2', author: AUTHOR })
     await repo.dispose()
     expect(await codeOf(repo.status())).toBe('WORKTREE_DISPOSED')
   })
 
-  test('activeSessions 计数随创建与释放增减', async () => {
+  test('activeSessions rises and falls with creation and release', async () => {
     expect(store.activeSessions).toBe(0)
     const a = await store.createSession({ branch: 'feat/c1', author: AUTHOR })
     expect(store.activeSessions).toBe(1)
@@ -135,7 +136,7 @@ describe('session 生命周期', () => {
     expect(store.activeSessions).toBe(0)
   })
 
-  test('listSessions 报告存活 worktree 与状态', async () => {
+  test('listSessions reports the live worktrees and their state', async () => {
     const a = await store.createSession({ branch: 'feat/l', author: AUTHOR })
     const list = await store.listSessions()
     expect(list.map((s) => s.dir)).toContain(a.dir)
@@ -144,7 +145,7 @@ describe('session 生命周期', () => {
     await a.dispose()
   })
 
-  test('每个 session 有独立的 author，互不覆盖', async () => {
+  test('each session has its own author and they do not overwrite each other', async () => {
     const a = await store.createSession({
       branch: 'feat/au1', author: { name: 'Alice', email: 'alice@e.com' },
     })
@@ -156,18 +157,18 @@ describe('session 生命周期', () => {
     expect(git(a.dir, 'log', '-1', '--format=%an <%ae>').trim()).toBe('Alice <alice@e.com>')
     expect(git(b.dir, 'log', '-1', '--format=%an <%ae>').trim()).toBe('Bob <bob@e.com>')
 
-    // attachSession 也应恢复各自的 author，而不是最后一个写入者
+    // attachSession should restore each session's own author, not the last writer's
     const ra = await store.attachSession(a.dir)
     await ra.writeFile('x2.md', 'a2'); await ra.commit({ message: 'a2' })
     expect(git(a.dir, 'log', '-1', '--format=%an <%ae>').trim()).toBe('Alice <alice@e.com>')
     await ra.dispose(); await b.dispose()
   })
 
-  test('author 写入 worktree 私有配置，不污染共享 .git/config', async () => {
+  test('the author goes into the worktree-private config and leaves the shared .git/config alone', async () => {
     const a = await store.createSession({
       branch: 'feat/cfg', author: { name: 'Alice', email: 'alice@e.com' },
     })
-    // 键不存在时 git config 以退出码 1 结束 —— 这正是期望的结果
+    // git config exits 1 when the key is absent, which is exactly what we want here
     let sharedValue = 'PRESENT'
     try {
       sharedValue = git(store.storeDir, 'config', '--local', '--get-all', 'user.name').trim()
@@ -178,7 +179,7 @@ describe('session 生命周期', () => {
     await a.dispose()
   })
 
-  test('并发创建 20 个 session 全部成功且互不干扰', async () => {
+  test('twenty sessions created concurrently all succeed without interfering', async () => {
     const repos = await Promise.all(
       Array.from({ length: 20 }, (_, i) =>
         store.createSession({ branch: `feat/p${i}`, sparsePaths: ['docs'], author: AUTHOR }),
@@ -190,7 +191,7 @@ describe('session 生命周期', () => {
     expect(store.activeSessions).toBe(0)
   })
 
-  test('并发在各自 session 中提交互不干扰', async () => {
+  test('committing concurrently in separate sessions does not interfere', async () => {
     const repos = await Promise.all(
       Array.from({ length: 6 }, (_, i) =>
         store.createSession({ branch: `feat/w${i}`, sparsePaths: ['docs'], author: AUTHOR }),
@@ -203,13 +204,13 @@ describe('session 生命周期', () => {
     for (const [i, r] of repos.entries()) {
       const log = await r.log({ limit: 1 })
       expect(log[0]!.message).toBe(`w${i}`)
-      // 每个 worktree 只应看到自己写的文件
+      // Each worktree should see only the file it wrote
       expect(await r.exists(`docs/w${(i + 1) % 6}.md`)).toBe(false)
     }
     await Promise.all(repos.map((r) => r.dispose()))
   })
 
-  test('attachSession 可重新接管已存在的 worktree', async () => {
+  test('attachSession can take an existing worktree back over', async () => {
     const a = await store.createSession({
       branch: 'feat/at', sparsePaths: ['docs'], author: AUTHOR,
     })
@@ -222,7 +223,7 @@ describe('session 生命周期', () => {
     await a.dispose()
   })
 
-  test('attachSession 拒绝不属于本 store 的目录', async () => {
+  test('attachSession refuses a directory that belongs to another store', async () => {
     expect(await codeOf(store.attachSession(join(root, 'not-a-worktree'))))
       .toBe('INVALID_ARGUMENT')
     const outside = join(root, 'outside-wt')
@@ -230,7 +231,7 @@ describe('session 生命周期', () => {
     expect(await codeOf(store.attachSession(outside))).toBe('INVALID_ARGUMENT')
   })
 
-  test('pruneOrphans 回收无主目录', async () => {
+  test('pruneOrphans reclaims orphaned directories', async () => {
     const orphan = join(store.worktreeRoot, 'orphan-xyz')
     mkdirSync(join(orphan, 'sub'), { recursive: true })
     writeFileSync(join(orphan, 'sub', 'f.txt'), 'x')
@@ -239,7 +240,7 @@ describe('session 生命周期', () => {
     expect(existsSync(orphan)).toBe(false)
   })
 
-  test('pruneOrphans 不误删活跃 worktree', async () => {
+  test('pruneOrphans does not delete a live worktree by mistake', async () => {
     const a = await store.createSession({ branch: 'feat/keep', author: AUTHOR })
     const removed = await store.pruneOrphans()
     expect(removed).not.toContain(a.dir)

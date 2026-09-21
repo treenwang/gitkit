@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+/*
+ * @treenwang/gitkit-ui ships no CSS. Its components only use shadcn's semantic
+ * token classes, so Tailwind has to scan the package's build output or every
+ * one of those classes is dropped and the components render unstyled with no
+ * error. The package warns in development when --background is missing, which
+ * is the symptom of forgetting this line.
+ *
+ * Pointing at packages/ui/dist rather than node_modules/@treenwang/gitkit-ui,
+ * because in this monorepo the latter is a symlink.
+ */
+@source "../../../packages/ui/dist";
+
+/* The shadcn token set the components rely on. Swap in your own palette. */
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.21 0.01 68);
+  --muted: oklch(0.96 0.005 68);
+  --muted-foreground: oklch(0.53 0.01 68);
+  --border: oklch(0.9 0.006 68);
+  --ring: oklch(0.55 0.08 155);
+  --primary: oklch(0.52 0.09 155);
+  --primary-foreground: oklch(0.99 0 0);
+  --accent: oklch(0.96 0.01 155);
+  --accent-foreground: oklch(0.27 0.04 155);
+  --destructive: oklch(0.53 0.16 28);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: oklch(0.19 0.006 280);
+    --foreground: oklch(0.93 0.005 68);
+    --muted: oklch(0.26 0.008 280);
+    --muted-foreground: oklch(0.66 0.01 68);
+    --border: oklch(0.31 0.01 280);
+    --ring: oklch(0.72 0.1 155);
+    --primary: oklch(0.72 0.1 155);
+    --primary-foreground: oklch(0.19 0.01 155);
+    --accent: oklch(0.29 0.02 155);
+    --accent-foreground: oklch(0.9 0.03 155);
+    --destructive: oklch(0.68 0.14 28);
+  }
+}
+
+/* Map the tokens onto Tailwind's color scale so bg-background, text-muted-foreground,
+   border-border and friends actually exist. */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}

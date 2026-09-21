@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 import {
   buildConflictPlan,
   classifyConflict,
@@ -11,7 +11,7 @@ import {
 } from '../../src/domain/conflict-parser'
 import { GitOpError, type ConflictSide } from '../../src/types'
 
-// 以下样本均来自真实 git 输出（见 tests/helpers/fixtures.ts 造出的场景）
+// Every sample below came from real git output - see the scenarios built in tests/helpers/fixtures.ts
 const LS_FILES_U = `100644 5e9a9cdccecb5757623b288b5ae4e235ea4afab1 2\tadded.txt
 100644 8fe58f057108f3793366630cb3741eb8d3b1764a 3\tadded.txt
 100644 8352675d67aed6625ece79af41c27fdb4ee2e867 1\tbin.dat
@@ -51,7 +51,7 @@ THEIR5
 const NO_RENAMES = { ours: new Map<string, string>(), theirs: new Map<string, string>() }
 
 describe('parseUnmergedIndex', () => {
-  test('按路径归并 stage', () => {
+  test('groups stages by path', () => {
     const entries = parseUnmergedIndex(LS_FILES_U)
     expect(entries.map((e) => e.path))
       .toEqual(['added.txt', 'bin.dat', 'both.txt', 'delmod.txt', 'moddel.txt'])
@@ -61,15 +61,15 @@ describe('parseUnmergedIndex', () => {
     expect(entries[2]!.stages.get(2)!.mode).toBe('100644')
   })
 
-  test('空输入返回空数组', () => {
+  test('empty input returns an empty array', () => {
     expect(parseUnmergedIndex('')).toEqual([])
   })
 
-  test('无法解析的行抛错而不静默跳过', () => {
+  test('an unparseable line throws instead of being skipped silently', () => {
     expect(() => parseUnmergedIndex('garbage line')).toThrow(GitOpError)
   })
 
-  test('路径含空格', () => {
+  test('paths containing spaces', () => {
     const e = parseUnmergedIndex(
       `100644 ${'a'.repeat(40)} 2\tdocs/my file.md`,
     )
@@ -85,14 +85,14 @@ describe('classifyConflict', () => {
   test('2+3 → both_added', () => expect(classifyConflict(mk(2, 3))).toBe('both_added'))
   test('1+2 → deleted_by_them', () => expect(classifyConflict(mk(1, 2))).toBe('deleted_by_them'))
   test('1+3 → deleted_by_us', () => expect(classifyConflict(mk(1, 3))).toBe('deleted_by_us'))
-  test('单 stage 组合抛错（应由 rename 归组处理）', () => {
+  test('a single-stage combination throws - rename grouping should have handled it', () => {
     expect(() => classifyConflict(mk(1))).toThrow(GitOpError)
     expect(() => classifyConflict(mk(2))).toThrow(GitOpError)
   })
 })
 
 describe('buildConflictPlan', () => {
-  test('五种同路径冲突各归其类', () => {
+  test('the five same-path conflicts each get their own type', () => {
     const plans = buildConflictPlan(parseUnmergedIndex(LS_FILES_U), NO_RENAMES)
     const byPath = Object.fromEntries(plans.map((p) => [p.path, p.type]))
     expect(byPath).toEqual({
@@ -104,7 +104,7 @@ describe('buildConflictPlan', () => {
     })
   })
 
-  test('rename/rename 的三条单 stage 记录被归并为一条', () => {
+  test('the three single-stage entries of a rename/rename merge into one', () => {
     const plans = buildConflictPlan(parseUnmergedIndex(RENAME_LS_FILES_U), {
       ours: new Map([['orig.txt', 'our-name.txt']]),
       theirs: new Map([['orig.txt', 'their-name.txt']]),
@@ -117,13 +117,13 @@ describe('buildConflictPlan', () => {
     expect(plans[0]!.ours!.oid).toBe('3b04f2e266b771610bd8c140a4e393ec773df801')
   })
 
-  test('缺少 rename 映射时单 stage 条目仍上报为 rename，不抛错', () => {
+  test('without a rename map a single-stage entry is still reported as a rename rather than throwing', () => {
     const plans = buildConflictPlan(parseUnmergedIndex(RENAME_LS_FILES_U), NO_RENAMES)
     expect(plans).toHaveLength(3)
     expect(plans.every((p) => p.type === 'rename')).toBe(true)
   })
 
-  test('rename 与普通冲突混合时互不干扰', () => {
+  test('renames and ordinary conflicts do not interfere when mixed', () => {
     const plans = buildConflictPlan(
       parseUnmergedIndex(`${RENAME_LS_FILES_U}\n${LS_FILES_U}`),
       { ours: new Map([['orig.txt', 'our-name.txt']]), theirs: new Map([['orig.txt', 'their-name.txt']]) },
@@ -134,18 +134,18 @@ describe('buildConflictPlan', () => {
 })
 
 describe('parseRenameMap', () => {
-  test('只取 R 状态', () => {
+  test('only R entries are taken', () => {
     const m = parseRenameMap('R100\torig.txt\tnew.txt\nM\tother.txt\nA\tadded.txt')
     expect([...m]).toEqual([['orig.txt', 'new.txt']])
   })
-  test('R 后带相似度数字', () => {
+  test('R followed by a similarity score', () => {
     expect(parseRenameMap('R087\ta\tb').get('a')).toBe('b')
   })
-  test('空输入', () => expect(parseRenameMap('').size).toBe(0))
+  test('empty input', () => expect(parseRenameMap('').size).toBe(0))
 })
 
 describe('scanConflicts / parseConflictHunks', () => {
-  test('解析 diff3 的两个 hunk', () => {
+  test('parses two diff3 hunks', () => {
     const hunks = parseConflictHunks(DIFF3)
     expect(hunks).toHaveLength(2)
     expect(hunks[0]).toMatchObject({
@@ -157,59 +157,59 @@ describe('scanConflicts / parseConflictHunks', () => {
     })
   })
 
-  test('非 diff3（无 base 段）时 baseLines 缺省', () => {
+  test('baseLines is absent when the content is not diff3 and has no base section', () => {
     const hunks = parseConflictHunks('a\n<<<<<<< HEAD\nO\n=======\nT\n>>>>>>> b\n')
     expect(hunks[0]!.baseLines).toBeUndefined()
     expect(hunks[0]!.ourLines).toEqual(['O'])
   })
 
-  test('空的 ours 段（我方删空）', () => {
+  test('an empty ours section, where our side emptied it', () => {
     const hunks = parseConflictHunks('<<<<<<< HEAD\n=======\nT\n>>>>>>> b\n')
     expect(hunks[0]!.ourLines).toEqual([])
     expect(hunks[0]!.theirLines).toEqual(['T'])
   })
 
-  test('无冲突标记时返回空数组', () => {
+  test('returns an empty array when there are no conflict markers', () => {
     expect(parseConflictHunks('just\nplain\ntext\n')).toEqual([])
   })
 
-  test('未闭合的标记抛错而不产出半解析结果', () => {
+  test('unclosed markers throw rather than producing a half-parsed result', () => {
     expect(() => parseConflictHunks('<<<<<<< HEAD\nO\n=======\nT\n')).toThrow(GitOpError)
   })
 
-  test('在 ======= 之前遇到 >>>>>>> 抛错', () => {
+  test('>>>>>>> before ======= throws', () => {
     expect(() => parseConflictHunks('<<<<<<< HEAD\nO\n>>>>>>> b\n')).toThrow(GitOpError)
   })
 
-  test('正文中长度不为 7 的相似串不被误认为标记', () => {
+  test('a similar run of other than seven characters in the body is not mistaken for a marker', () => {
     const text = '<<<<<<<<< not a marker\n======== not either\n'
     expect(parseConflictHunks(text)).toEqual([])
   })
 
-  test('CRLF 行尾：\\r 留在内容里，标记仍可识别', () => {
+  test('CRLF line endings: \\r stays in the content and markers are still recognized', () => {
     const hunks = parseConflictHunks('<<<<<<< HEAD\r\nO\r\n=======\r\nT\r\n>>>>>>> b\r\n')
-    // 标记行带 \r 后缀，正则要求 <<<<<<< 后是空格或行尾，故 '<<<<<<< HEAD\r' 命中
+    // The marker line carries a trailing \r; the regex wants a space or end of line after <<<<<<<, so '<<<<<<< HEAD\r' matches
     expect(hunks).toHaveLength(1)
     expect(hunks[0]!.ourLines).toEqual(['O\r'])
   })
 
-  test('segments 保留文本段顺序', () => {
+  test('segments keep the order of the text sections', () => {
     const segs = scanConflicts(DIFF3)
     expect(segs.map((s) => s.kind)).toEqual(['text', 'hunk', 'text', 'hunk', 'text'])
   })
 })
 
 describe('looksBinary', () => {
-  test('含 NUL 判定为二进制', () => {
+  test('content with a NUL counts as binary', () => {
     expect(looksBinary(Buffer.from([0x61, 0x00, 0x62]))).toBe(true)
   })
-  test('纯文本不是二进制', () => {
+  test('plain text is not binary', () => {
     expect(looksBinary(Buffer.from('hello world\n'))).toBe(false)
   })
-  test('空 buffer 不是二进制', () => {
+  test('an empty buffer is not binary', () => {
     expect(looksBinary(Buffer.alloc(0))).toBe(false)
   })
-  test('只检查前 8000 字节', () => {
+  test('only the first 8000 bytes are checked', () => {
     const buf = Buffer.concat([Buffer.alloc(9000, 0x61), Buffer.from([0])])
     expect(looksBinary(buf)).toBe(false)
   })

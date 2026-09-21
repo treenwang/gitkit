@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 import { GitkitClient, GitkitClientError, createClient } from '../src/client'
 import { OP_NAMES } from '../src/protocol'
 
@@ -22,8 +22,8 @@ function mk(fetchImpl: typeof globalThis.fetch, sessionId = 'sess_1'): GitkitCli
   return createClient({ baseUrl: '/api/git/', sessionId, fetch: fetchImpl })
 }
 
-describe('请求形状', () => {
-  test('op 拼进 URL，sessionId 与参数合并进 body', async () => {
+describe('request shape', () => {
+  test('the op goes into the URL; sessionId and params merge into the body', async () => {
     const log: Recorded[] = []
     const c = mk(fakeFetch(() => json({ etag: 'e1' }), log))
     await c.call('files.write', { path: 'docs/a.md', content: 'x', baseEtag: 'e0' })
@@ -35,20 +35,20 @@ describe('请求形状', () => {
     })
   })
 
-  test('baseUrl 尾部斜杠不会产生双斜杠', async () => {
+  test('a trailing slash on baseUrl does not produce a double slash', async () => {
     const log: Recorded[] = []
     await createClient({ baseUrl: '/api/git/', sessionId: 's', fetch: fakeFetch(() => json({}), log) })
       .call('status', {})
     expect(log[0]!.url).toBe('/api/git/status')
   })
 
-  test('默认带 credentials: include，让宿主 cookie 生效', async () => {
+  test('sends credentials: include by default, so the host cookie applies', async () => {
     const log: Recorded[] = []
     await mk(fakeFetch(() => json({}), log)).call('status', {})
     expect(log[0]!.init.credentials).toBe('include')
   })
 
-  test('静态 headers 被合并', async () => {
+  test('static headers are merged in', async () => {
     const log: Recorded[] = []
     await createClient({
       baseUrl: '/g', sessionId: 's', headers: { 'x-csrf': 'tok' },
@@ -57,7 +57,7 @@ describe('请求形状', () => {
     expect((log[0]!.init.headers as Record<string, string>)['x-csrf']).toBe('tok')
   })
 
-  test('函数式 headers 每次请求求值（支持刷新令牌）', async () => {
+  test('headers as a function are evaluated per request, which supports refreshing a token', async () => {
     const log: Recorded[] = []
     let n = 0
     const c = createClient({
@@ -70,21 +70,21 @@ describe('请求形状', () => {
     expect((log[1]!.init.headers as Record<string, string>)['x-n']).toBe('2')
   })
 
-  test('keepalive 透传（页面隐藏时的最后一次保存）', async () => {
+  test('keepalive is passed through, for the last save as the page is hidden', async () => {
     const log: Recorded[] = []
     await mk(fakeFetch(() => json({ etag: 'e' }), log))
       .call('files.write', { path: 'a', content: 'b' }, { keepalive: true })
     expect(log[0]!.init.keepalive).toBe(true)
   })
 
-  test('未绑定 sessionId 时不发请求，直接抛错', async () => {
+  test('throws without sending a request when no sessionId is bound', async () => {
     const log: Recorded[] = []
     const c = createClient({ baseUrl: '/g', fetch: fakeFetch(() => json({}), log) })
     await expect(c.call('status', {})).rejects.toThrow(GitkitClientError)
     expect(log).toHaveLength(0)
   })
 
-  test('withSession 派生出新实例，原实例不受影响', async () => {
+  test('withSession derives a new instance and leaves the original alone', async () => {
     const log: Recorded[] = []
     const base = createClient({ baseUrl: '/g', sessionId: 'a', fetch: fakeFetch(() => json({}), log) })
     const derived = base.withSession('b')
@@ -95,10 +95,10 @@ describe('请求形状', () => {
   })
 })
 
-describe('错误反序列化', () => {
-  test('结构化错误被还原为 GitkitClientError', async () => {
+describe('error deserialization', () => {
+  test('a structured error comes back as a GitkitClientError', async () => {
     const c = mk(fakeFetch(() =>
-      json({ error: { code: 'PATH_OUTSIDE_SPARSE', message: '不在范围内' } }, 400)))
+      json({ error: { code: 'PATH_OUTSIDE_SPARSE', message: 'out of range' } }, 400)))
     try {
       await c.call('files.read', { path: 'src/x.ts' })
       throw new Error('should have thrown')
@@ -107,14 +107,14 @@ describe('错误反序列化', () => {
       expect(err).toBeInstanceOf(GitkitClientError)
       expect(err.code).toBe('PATH_OUTSIDE_SPARSE')
       expect(err.status).toBe(400)
-      expect(err.message).toBe('不在范围内')
+      expect(err.message).toBe('out of range')
     }
   })
 
-  test('STALE_ETAG 带回服务端当前内容，isStale 为 true', async () => {
+  test('STALE_ETAG carries the server content back and isStale is true', async () => {
     const c = mk(fakeFetch(() =>
       json({ error: {
-        code: 'STALE_ETAG', message: '文件已被改动',
+        code: 'STALE_ETAG', message: 'the file changed',
         current: { content: 'server side', etag: 'e2' },
       } }, 409)))
     try {
@@ -127,7 +127,7 @@ describe('错误反序列化', () => {
     }
   })
 
-  test('WORKTREE_DISPOSED 与 SESSION_NOT_FOUND 的 isGone 为 true', async () => {
+  test('isGone is true for WORKTREE_DISPOSED and SESSION_NOT_FOUND', async () => {
     for (const [code, status] of [['WORKTREE_DISPOSED', 410], ['SESSION_NOT_FOUND', 404]] as const) {
       const c = mk(fakeFetch(() => json({ error: { code, message: 'gone' } }, status)))
       const err = await c.call('status', {}).catch((e: GitkitClientError) => e)
@@ -135,21 +135,21 @@ describe('错误反序列化', () => {
     }
   })
 
-  test('非结构化响应退化为 UNKNOWN 并保留状态码', async () => {
+  test('an unstructured response degrades to UNKNOWN and keeps the status code', async () => {
     const c = mk(fakeFetch(() => new Response('<html>502</html>', { status: 502 })))
     const err = await c.call('status', {}).catch((e: GitkitClientError) => e)
     expect((err as GitkitClientError).code).toBe('UNKNOWN')
     expect((err as GitkitClientError).status).toBe(502)
   })
 
-  test('网络层失败映射为 NETWORK，status 为 0', async () => {
+  test('a network-level failure maps to NETWORK with status 0', async () => {
     const c = mk(fakeFetch(() => { throw new TypeError('Failed to fetch') }))
     const err = await c.call('status', {}).catch((e: GitkitClientError) => e)
     expect((err as GitkitClientError).code).toBe('NETWORK')
     expect((err as GitkitClientError).status).toBe(0)
   })
 
-  test('中止映射为 TIMEOUT', async () => {
+  test('an abort maps to TIMEOUT', async () => {
     const c = mk(fakeFetch(() => {
       const e = new Error('aborted'); e.name = 'AbortError'; throw e
     }))
@@ -157,7 +157,7 @@ describe('错误反序列化', () => {
     expect((err as GitkitClientError).code).toBe('TIMEOUT')
   })
 
-  test('signal 透传给 fetch', async () => {
+  test('signal is passed through to fetch', async () => {
     const log: Recorded[] = []
     const ac = new AbortController()
     await mk(fakeFetch(() => json({}), log)).call('status', {}, { signal: ac.signal })
@@ -165,24 +165,24 @@ describe('错误反序列化', () => {
   })
 })
 
-describe('成功响应', () => {
-  test('直接返回反序列化后的结果', async () => {
+describe('successful responses', () => {
+  test('returns the deserialized result directly', async () => {
     const c = mk(fakeFetch(() => json({ patch: 'diff --git …', truncated: false })))
     expect(await c.call('changes.diff', {})).toEqual({ patch: 'diff --git …', truncated: false })
   })
 
-  test('空响应体不报错', async () => {
+  test('an empty body is not an error', async () => {
     const c = mk(fakeFetch(() => new Response('', { status: 200 })))
     expect(await c.call('status', {})).toBeUndefined()
   })
 })
 
-describe('协议表', () => {
-  test('OP_NAMES 无重复', () => {
+describe('the protocol table', () => {
+  test('OP_NAMES has no duplicates', () => {
     expect(new Set(OP_NAMES).size).toBe(OP_NAMES.length)
   })
 
-  test('OP_NAMES 覆盖阶段 1 与阶段 2 的全部 op', () => {
+  test('OP_NAMES covers every op from phase 1 and phase 2', () => {
     for (const op of ['status', 'files.read', 'files.write', 'files.delete', 'commit',
       'push', 'sync.pull', 'conflicts.list', 'conflicts.resolve']) {
       expect(OP_NAMES).toContain(op as never)

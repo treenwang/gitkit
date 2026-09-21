@@ -2,10 +2,11 @@ import { scanConflicts } from './conflict-parser'
 import { GitOpError, type HunkChoice } from '../types'
 
 /**
- * 按每个 hunk 的选择重建完整文件内容。纯函数，不碰 IO。
+ * Rebuild the full file contents from a per-hunk choice. Pure function, no IO.
  *
- * choices 长度必须与 hunk 数一致 —— 不做"省略即 ours"的默认，避免宿主
- * 漏传一个就静默丢掉改动。
+ * choices must have exactly one entry per hunk. There is deliberately no
+ * "omitted means ours" default: a host that forgets one entry would silently
+ * drop a change.
  */
 export function buildResolvedContent(raw: string, choices: readonly HunkChoice[]): string {
   const segments = scanConflicts(raw)
@@ -14,7 +15,7 @@ export function buildResolvedContent(raw: string, choices: readonly HunkChoice[]
   if (choices.length !== hunkCount) {
     throw new GitOpError(
       'INVALID_ARGUMENT',
-      `choices 数量(${choices.length})与冲突块数量(${hunkCount})不一致`,
+      `got ${choices.length} choices for ${hunkCount} conflict hunks`,
     )
   }
 
@@ -41,7 +42,7 @@ export function buildResolvedContent(raw: string, choices: readonly HunkChoice[]
         if (!seg.baseLines) {
           throw new GitOpError(
             'INVALID_ARGUMENT',
-            `第 ${seg.index} 个冲突块没有 base 段（需要 merge.conflictStyle=diff3）`,
+            `conflict hunk ${seg.index} has no base section (requires merge.conflictStyle=diff3)`,
           )
         }
         out.push(...seg.baseLines)
@@ -51,7 +52,7 @@ export function buildResolvedContent(raw: string, choices: readonly HunkChoice[]
         break
       default: {
         const never: never = choice
-        throw new GitOpError('INVALID_ARGUMENT', `未知的 HunkChoice: ${String(never)}`)
+        throw new GitOpError('INVALID_ARGUMENT', `unknown HunkChoice: ${String(never)}`)
       }
     }
   }

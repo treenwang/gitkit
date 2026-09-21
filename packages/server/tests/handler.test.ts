@@ -1,12 +1,12 @@
-import { describe, expect, test } from 'bun:test'
-import { GitOpError } from '@aaxis/gitkit'
-import type { GitRepo } from '@aaxis/gitkit'
+import { describe, expect, test } from 'vitest'
+import { GitOpError } from '@treenwang/gitkit'
+import type { GitRepo } from '@treenwang/gitkit'
 import { createHandler } from '../src/handler'
 import { etagOf } from '../src/ops'
 
 const SERVER_PATH = '/data/repos/github.com/acme/web/wt/s-a3f9c1'
 
-/** 只实现测试用到的部分；其余方法调用即失败，避免悄悄走到未预期的路径。 */
+/** Only what the tests need is implemented; any other method fails loudly rather than quietly taking an unexpected path. */
 function fakeRepo(over: Partial<Record<keyof GitRepo, unknown>> = {}): GitRepo {
   const base = {
     dir: SERVER_PATH,
@@ -20,9 +20,9 @@ function fakeRepo(over: Partial<Record<keyof GitRepo, unknown>> = {}): GitRepo {
   return new Proxy({ ...base, ...over } as Record<string, unknown>, {
     get(t, k) {
       if (k in t) return t[k as string]
-      // 必须让 then 保持 undefined，否则 await 会把这个对象当成 thenable
+      // then has to stay undefined, or await would treat this object as a thenable
       if (typeof k !== 'string' || k === 'then') return undefined
-      return () => { throw new Error(`未预期地调用了 ${k}`) }
+      return () => { throw new Error(`unexpected call to ${k}`) }
     },
   }) as unknown as GitRepo
 }
@@ -38,14 +38,14 @@ const mk = (over: Parameters<typeof createHandler>[0] extends infer C
   ? Partial<C> : never = {}) =>
   createHandler({ resolveSession: () => fakeRepo(), ...over } as Parameters<typeof createHandler>[0])
 
-describe('安全边界', () => {
-  test('resolveSession 返回 null → 404（不区分不存在与无权限）', async () => {
+describe('the security boundary', () => {
+  test('resolveSession returning null gives 404, not distinguishing missing from forbidden', async () => {
     const res = await mk({ resolveSession: () => null })(post('status'))
     expect(res.status).toBe(404)
     expect((await res.json()).error.code).toBe('SESSION_NOT_FOUND')
   })
 
-  test('resolveSession 收到原始 Request 与 sessionId', async () => {
+  test('resolveSession receives the original Request and the sessionId', async () => {
     let seen: { url: string; id: string } | undefined
     await mk({
       resolveSession: (req, id) => { seen = { url: req.url, id }; return fakeRepo() },
@@ -54,33 +54,33 @@ describe('安全边界', () => {
     expect(seen!.url).toContain('/api/git/status')
   })
 
-  test('allow 之外的 op → 404，而不是 405（不暴露其存在）', async () => {
+  test('an op outside allow gives 404 rather than 405, so its existence stays hidden', async () => {
     const res = await mk({ allow: ['status'] })(post('files.write'))
     expect(res.status).toBe(404)
     expect((await res.json()).error.code).toBe('OP_NOT_ALLOWED')
   })
 
-  test('未知 op → 404', async () => {
+  test('an unknown op gives 404', async () => {
     expect((await mk()(post('rm-rf'))).status).toBe(404)
   })
 
-  test('can 返回 false → 404', async () => {
+  test('can returning false gives 404', async () => {
     const res = await mk({ can: () => false })(post('status'))
     expect(res.status).toBe(404)
   })
 
-  test('can 在 allow 之后执行，可按请求判断', async () => {
+  test('can runs after allow and may decide per request', async () => {
     const seen: string[] = []
     await mk({ can: (_req, op) => { seen.push(op); return true } })(post('status'))
     expect(seen).toEqual(['status'])
   })
 
-  test('非 POST 一律拒绝', async () => {
+  test('anything other than POST is refused', async () => {
     const res = await mk()(new Request('http://x/api/git/status', { method: 'GET' }))
     expect(res.status).toBe(404)
   })
 
-  test('缺少 sessionId → 400，且不调用 resolveSession', async () => {
+  test('a missing sessionId gives 400 without calling resolveSession', async () => {
     let called = false
     const res = await mk({ resolveSession: () => { called = true; return fakeRepo() } })(
       post('status', {}),
@@ -89,7 +89,7 @@ describe('安全边界', () => {
     expect(called).toBe(false)
   })
 
-  test('请求体不是 JSON 对象 → 400', async () => {
+  test('a body that is not a JSON object gives 400', async () => {
     const res = await mk()(new Request('http://x/api/git/status', {
       method: 'POST', body: '[1,2,3]',
     }))
@@ -97,9 +97,9 @@ describe('安全边界', () => {
   })
 })
 
-describe('信息过滤 —— 服务端路径绝不能泄露', () => {
-  test('GitOpError 的 detail 与 command 默认被剥除', async () => {
-    const err = new GitOpError('NOT_A_REPO', '不是仓库', {
+describe('information filtering - server paths must never leak', () => {
+  test('detail and command on a GitOpError are stripped by default', async () => {
+    const err = new GitOpError('NOT_A_REPO', 'not a repository', {
       detail: `fatal: not a git repository: ${SERVER_PATH}/.git`,
       command: `git -c http.extraheader=… status`,
     })
@@ -110,10 +110,10 @@ describe('信息过滤 —— 服务端路径绝不能泄露', () => {
     expect(text).not.toContain(SERVER_PATH)
     expect(text).not.toContain('http.extraheader')
     const body = JSON.parse(text)
-    expect(body.error).toEqual({ code: 'NOT_A_REPO', message: '不是仓库' })
+    expect(body.error).toEqual({ code: 'NOT_A_REPO', message: 'not a repository' })
   })
 
-  test('exposeDetail: true 时才带 detail', async () => {
+  test('detail is included only with exposeDetail: true', async () => {
     const err = new GitOpError('UNKNOWN', 'x', { detail: 'server detail' })
     const res = await mk({
       exposeDetail: true,
@@ -122,7 +122,7 @@ describe('信息过滤 —— 服务端路径绝不能泄露', () => {
     expect((await res.json()).error.detail).toBe('server detail')
   })
 
-  test('push 冲突结果中的 worktreeDir 被剥除', async () => {
+  test('worktreeDir is stripped from a push conflict result', async () => {
     const repo = fakeRepo({
       push: async () => ({
         ok: false, pushed: false, reason: 'conflict',
@@ -139,7 +139,7 @@ describe('信息过滤 —— 服务端路径绝不能泄露', () => {
     expect('worktreeDir' in body).toBe(false)
   })
 
-  test('非 GitOpError 的意外异常也不泄露堆栈', async () => {
+  test('an unexpected non-GitOpError exception does not leak a stack either', async () => {
     const res = await mk({
       resolveSession: () => fakeRepo({
         status: async () => { throw new Error(`ENOENT: ${SERVER_PATH}/index.lock`) },
@@ -151,7 +151,7 @@ describe('信息过滤 —— 服务端路径绝不能泄露', () => {
   })
 })
 
-describe('错误码 → HTTP 映射', () => {
+describe('error code to HTTP mapping', () => {
   const cases: Array<[string, number]> = [
     ['PATH_OUTSIDE_SPARSE', 400], ['PATH_TRAVERSAL', 400], ['INVALID_ARGUMENT', 400],
     ['BRANCH_IN_USE', 409], ['MERGE_IN_PROGRESS', 409], ['DIRTY_WORKTREE', 409],
@@ -170,10 +170,10 @@ describe('错误码 → HTTP 映射', () => {
     })
   }
 
-  test('AUTH_FAILED 是 502 而不是 401 —— 401 会让前端误判为用户会话过期', async () => {
+  test('AUTH_FAILED is 502, not 401 - a 401 would read to the frontend as an expired user session', async () => {
     const res = await mk({
       resolveSession: () => fakeRepo({
-        status: async () => { throw new GitOpError('AUTH_FAILED', 'token 失效') },
+        status: async () => { throw new GitOpError('AUTH_FAILED', 'the token expired') },
       }),
     })(post('status'))
     expect(res.status).toBe(502)
@@ -181,8 +181,8 @@ describe('错误码 → HTTP 映射', () => {
   })
 })
 
-describe('串行化', () => {
-  test('同一 sessionId 的请求不重叠', async () => {
+describe('serialization', () => {
+  test('requests for one sessionId never overlap', async () => {
     const events: string[] = []
     let n = 0
     const handler = mk({
@@ -201,7 +201,7 @@ describe('串行化', () => {
     expect(events).toEqual(['start1', 'end1', 'start2', 'end2'])
   })
 
-  test('不同 sessionId 可并发', async () => {
+  test('different sessionIds run concurrently', async () => {
     const events: string[] = []
     const handler = mk({
       resolveSession: (_req, id) => fakeRepo({
@@ -221,7 +221,7 @@ describe('串行化', () => {
     expect(events.slice(0, 2)).toEqual(['start-a', 'start-b'])
   })
 
-  test('一个请求抛错不会卡死后续请求', async () => {
+  test('one request throwing does not wedge the ones behind it', async () => {
     let first = true
     const handler = mk({
       resolveSession: () => fakeRepo({
@@ -236,7 +236,7 @@ describe('串行化', () => {
     expect((await (await handler(post('status'))).json()).branch).toBe('ok')
   })
 
-  test('serialize: false 时不排队', async () => {
+  test('serialize: false does not queue', async () => {
     const events: string[] = []
     const handler = mk({
       serialize: false,
@@ -255,7 +255,7 @@ describe('串行化', () => {
 })
 
 describe('etag', () => {
-  test('同内容同 etag，不同内容不同 etag', () => {
+  test('same content same etag, different content different etag', () => {
     expect(etagOf('abc')).toBe(etagOf(Buffer.from('abc')))
     expect(etagOf('abc')).not.toBe(etagOf('abd'))
     expect(etagOf('abc')).toMatch(/^[0-9a-f]{64}$/)

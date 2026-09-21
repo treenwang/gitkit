@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { join } from 'node:path'
-import { RepoManager, type GitRepo, type RepoStore } from '@aaxis/gitkit'
-import { GitkitClientError, createClient, type GitkitClient } from '@aaxis/gitkit-client'
+import { RepoManager, type GitRepo, type RepoStore } from '@treenwang/gitkit'
+import { GitkitClientError, createClient, type GitkitClient } from '@treenwang/gitkit-client'
 import { createHandler } from '../src/handler'
 import { toExpress } from '../src/express'
 import {
@@ -9,8 +9,9 @@ import {
 } from '../../core/tests/helpers/fixtures'
 
 /**
- * 端到端：真实的 GitkitClient → HTTP handler → 真 git worktree。
- * client 与 server 各自的单测都用了打桩，这里验证两者真的能对上。
+ * End to end: a real GitkitClient through the HTTP handler into a real git
+ * worktree. The client and server unit tests both stub things out; this one
+ * checks that the two halves actually meet.
  */
 let root: string, bare: string, store: RepoStore, repo: GitRepo, client: GitkitClient
 
@@ -25,7 +26,7 @@ beforeEach(async () => {
   })
 
   const handler = createHandler({
-    // 宿主的鉴权与租户隔离在这里；协议本身不带任何仓库信息
+    // The host's authentication and tenant isolation live here; the protocol itself carries no repository information
     resolveSession: (_req, id) => (id === 'sess_alice' ? repo : null),
   })
 
@@ -38,15 +39,15 @@ beforeEach(async () => {
 })
 afterEach(async () => { await repo.dispose().catch(() => {}); cleanup(root) })
 
-describe('client → handler → 真 git', () => {
-  test('status 反映真实分支', async () => {
+describe('client to handler to real git', () => {
+  test('status reflects the real branch', async () => {
     const s = await client.call('status', {})
     expect(s.branch).toBe('skills/alice-01')
     expect(s.clean).toBe(true)
     expect(s.operation).toBeNull()
   })
 
-  test('read → write → read 往返一致，etag 更新', async () => {
+  test('read, write, read round-trips consistently and updates the etag', async () => {
     const first = await client.call('files.read', { path: 'docs/a.md' })
     if (first.binary) throw new Error('unreachable')
     expect(first.content).toBe('# a\n')
@@ -61,7 +62,7 @@ describe('client → handler → 真 git', () => {
     expect(second.etag).not.toBe(first.etag)
   })
 
-  test('完整主链路：编辑 → 提交 → 推送', async () => {
+  test('the whole main path: edit, commit, push', async () => {
     await client.call('files.write', {
       path: 'docs/guide.md', content: '# Guide\n\nHello.\n',
     })
@@ -79,7 +80,7 @@ describe('client → handler → 真 git', () => {
     expect(git(root, 'ls-remote', '--heads', bare)).toContain('refs/heads/skills/alice-01')
   })
 
-  test('sparse 范围外的错误穿透为带错误码的 GitkitClientError', async () => {
+  test('an out-of-sparse-range error surfaces as a GitkitClientError with its code', async () => {
     const e = await client.call('files.read', { path: 'src/index.ts' })
       .catch((x: GitkitClientError) => x)
     expect(e).toBeInstanceOf(GitkitClientError)
@@ -87,7 +88,7 @@ describe('client → handler → 真 git', () => {
     expect((e as GitkitClientError).status).toBe(400)
   })
 
-  test('etag 冲突时 isStale 为 true 并带回服务端内容', async () => {
+  test('an etag conflict sets isStale and brings the server content back', async () => {
     const first = await client.call('files.read', { path: 'docs/a.md' })
     if (first.binary) throw new Error('unreachable')
     await client.call('files.write', { path: 'docs/a.md', content: 'from another tab' })
@@ -98,13 +99,13 @@ describe('client → handler → 真 git', () => {
 
     expect(e.isStale).toBe(true)
     expect(e.current?.content).toBe('from another tab')
-    // 本次写入必须未生效
+    // This write must not have landed
     const now = await client.call('files.read', { path: 'docs/a.md' })
     if (now.binary) throw new Error('unreachable')
     expect(now.content).toBe('from another tab')
   })
 
-  test('冲突结果不含服务端路径，且能被解决后推送成功', async () => {
+  test('the conflict result carries no server paths and can be resolved and pushed', async () => {
     await client.call('files.write', { path: 'docs/x.md', content: 'v1' })
     await client.call('commit', { message: 'v1' })
     await client.call('push', {})
@@ -127,14 +128,14 @@ describe('client → handler → 真 git', () => {
     expect((await client.call('push', {})).ok).toBe(true)
   })
 
-  test('无权访问的 session → 404 SESSION_NOT_FOUND', async () => {
+  test('a session you may not access gives 404 SESSION_NOT_FOUND', async () => {
     const other = client.withSession('sess_bob')
     const e = await other.call('status', {}).catch((x: GitkitClientError) => x) as GitkitClientError
     expect(e.code).toBe('SESSION_NOT_FOUND')
     expect(e.isGone).toBe(true)
   })
 
-  test('未开放的 op → 404，不暴露其存在', async () => {
+  test('an op that is not allowed gives 404 and does not reveal that it exists', async () => {
     const narrow = createHandler({
       resolveSession: () => repo,
       allow: ['status'],
@@ -152,8 +153,8 @@ describe('client → handler → 真 git', () => {
   })
 })
 
-describe('Express 适配器', () => {
-  test('转换 Express 风格的 req/res 并保留状态码', async () => {
+describe('the Express adapter', () => {
+  test('converts Express-style req/res and keeps the status code', async () => {
     const handler = createHandler({ resolveSession: () => repo })
     const express = toExpress(handler)
 
@@ -176,7 +177,7 @@ describe('Express 适配器', () => {
     expect(JSON.parse(captured!.body).branch).toBe('skills/alice-01')
   })
 
-  test('错误状态码同样透传', async () => {
+  test('error status codes pass through too', async () => {
     const handler = createHandler({ resolveSession: () => null })
     const express = toExpress(handler)
     let status = 0

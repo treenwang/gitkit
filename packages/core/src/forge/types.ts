@@ -4,7 +4,7 @@ export type CreatePRInput = {
   title: string
   body?: string
   base: string
-  /** 省略则使用当前 session 的分支。 */
+  /** Defaults to the current session's branch. */
   head?: string
   draft?: boolean
 }
@@ -15,7 +15,7 @@ export type ListPRQuery = {
   base?: string
 }
 
-/** 代码托管平台的抽象。第一版只实现 GitHub，接口预留给 GitLab/Bitbucket。 */
+/** Abstraction over a code-hosting platform. Only GitHub is implemented so far; the interface leaves room for GitLab and Bitbucket. */
 export interface ForgeProvider {
   createPR(input: CreatePRInput & { head: string }): Promise<PullRequest>
   listPRs(query?: ListPRQuery): Promise<PullRequest[]>

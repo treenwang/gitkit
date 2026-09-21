@@ -5,7 +5,7 @@ import {
   type ConflictType,
 } from '../types'
 
-// ------------------------------------------------------------ 索引 stage 表
+// ------------------------------------------------------------ index stage table
 
 export type Stage = 1 | 2 | 3
 export type UnmergedEntry = {
@@ -16,11 +16,12 @@ export type UnmergedEntry = {
 const LS_FILES_U = /^(\d{6}) ([0-9a-f]{40,64}) ([123])\t(.*)$/
 
 /**
- * 解析 `git ls-files -u` 的输出。
+ * Parse the output of `git ls-files -u`.
  *
- * stage 1 = base（共同祖先），2 = ours，3 = theirs。
- * 这是判定冲突类型的唯一可靠来源 —— 只有"双方都改了同一个文本文件"
- * 才会在工作区留下 <<<<<<< 标记，其余类型完全没有标记。
+ * Stage 1 is base (the common ancestor), 2 is ours, 3 is theirs.
+ * This is the only reliable way to decide a conflict's type: only "both sides
+ * modified the same text file" leaves <<<<<<< markers in the working tree; the
+ * other kinds leave no markers at all.
  */
 export function parseUnmergedIndex(out: string): UnmergedEntry[] {
   const byPath = new Map<string, UnmergedEntry>()
@@ -28,7 +29,7 @@ export function parseUnmergedIndex(out: string): UnmergedEntry[] {
     if (!line.trim()) continue
     const m = LS_FILES_U.exec(line)
     if (!m) {
-      throw new GitOpError('UNKNOWN', `无法解析 ls-files -u 输出行: ${line}`, { detail: out })
+      throw new GitOpError('UNKNOWN', `cannot parse this ls-files -u line: ${line}`, { detail: out })
     }
     const [, mode, oid, stageStr, path] = m
     const entry = byPath.get(path!) ?? { path: path!, stages: new Map() }
@@ -39,10 +40,11 @@ export function parseUnmergedIndex(out: string): UnmergedEntry[] {
 }
 
 /**
- * 由三个 stage 的在场组合确定冲突类型。
+ * Determine the conflict type from which of the three stages are present.
  *
- * 只处理"同一路径上的冲突"。rename 类冲突在索引里表现为多条各只有一个
- * stage 的记录（见 buildConflictPlan），不走这里。
+ * This only covers conflicts on a single path. Rename conflicts appear in the
+ * index as several entries that each carry one stage (see buildConflictPlan)
+ * and do not come through here.
  */
 export function classifyConflict(stages: ReadonlyMap<Stage, ConflictSide>): ConflictType {
   const base = stages.has(1)
@@ -54,13 +56,13 @@ export function classifyConflict(stages: ReadonlyMap<Stage, ConflictSide>): Conf
   if (base && !ours && theirs) return 'deleted_by_us'
   throw new GitOpError(
     'UNKNOWN',
-    `无法识别的 stage 组合: base=${base} ours=${ours} theirs=${theirs}`,
+    `unrecognized stage combination: base=${base} ours=${ours} theirs=${theirs}`,
   )
 }
 
-// ------------------------------------------------------------ rename 归组
+// ------------------------------------------------------------ rename grouping
 
-/** `git diff --name-status -M` 的输出 → 旧路径 → 新路径。 */
+/** Output of `git diff --name-status -M`, as old path to new path. */
 export function parseRenameMap(out: string): Map<string, string> {
   const map = new Map<string, string>()
   for (const line of out.split('\n')) {
@@ -85,16 +87,16 @@ export type ConflictPlan = {
   theirs?: ConflictSide
   ourPath?: string
   theirPath?: string
-  /** 工作区中承载该冲突内容的路径；rename 类冲突可能有多个或没有。 */
+  /** Working-tree paths holding this conflict's content; a rename conflict may have several or none. */
   worktreePath?: string
 }
 
 /**
- * 把索引条目组装成冲突计划。纯函数，不碰 IO。
+ * Assemble index entries into a conflict plan. Pure function, no IO.
  *
- * rename 冲突在索引里是多条各只有一个 stage 的记录（base 在旧路径，
- * ours 在我方新路径，theirs 在对方新路径）。用 `--name-status -M` 得到的
- * 重命名映射把它们归并成一条 type: 'rename' 的记录。
+ * A rename conflict appears in the index as several single-stage entries: base
+ * at the old path, ours at our new path, theirs at their new path. The rename
+ * map from `--name-status -M` merges them back into one type: 'rename' entry.
  */
 export function buildConflictPlan(
   entries: readonly UnmergedEntry[],
@@ -104,7 +106,7 @@ export function buildConflictPlan(
   const consumed = new Set<string>()
   const plans: ConflictPlan[] = []
 
-  // 先归并 rename 簇：以只有 stage 1 的条目为锚点
+  // Group the rename clusters first, anchored on the entries that carry only stage 1
   for (const entry of entries) {
     if (entry.stages.size !== 1 || !entry.stages.has(1)) continue
     const basePath = entry.path
@@ -133,8 +135,9 @@ export function buildConflictPlan(
   for (const entry of entries) {
     if (consumed.has(entry.path)) continue
     if (entry.stages.size === 1) {
-      // 落单的单 stage 条目：无法归入任何 rename 簇，仍按 rename 上报，
-      // 由宿主决策 —— 好过抛错阻塞整个冲突列表。
+      // A stray single-stage entry that fits no rename cluster. Still reported
+      // as a rename and left to the host, which beats throwing and blocking the
+      // entire conflict list.
       plans.push({
         path: entry.path,
         type: 'rename',
@@ -157,7 +160,7 @@ export function buildConflictPlan(
   return plans.sort((a, b) => (a.path < b.path ? -1 : 1))
 }
 
-// ------------------------------------------------------------ 冲突标记
+// ------------------------------------------------------------ conflict markers
 
 const OURS_START = /^<<<<<<<(?: |$)/
 const BASE_START = /^\|\|\|\|\|\|\|(?: |$)/
@@ -165,8 +168,10 @@ const SEPARATOR = /^=======$/
 const THEIRS_END = /^>>>>>>>(?: |$)/
 
 /**
- * 标记检测前先去掉行尾的 \r。CRLF 文件里 `=======\r` 必须仍被认作分隔符，
- * 否则整个冲突块会解析失败。内容行本身保留原样（含 \r），保证写回时字节一致。
+ * Strip a trailing \r before matching markers. In a CRLF file `=======\r` still
+ * has to count as the separator, or the whole hunk fails to parse. Content
+ * lines themselves are kept verbatim (\r included) so a write-back is
+ * byte-identical.
  */
 function marker(line: string): string {
   return line.endsWith('\r') ? line.slice(0, -1) : line
@@ -185,10 +190,12 @@ export type Segment =
     }
 
 /**
- * 把带冲突标记的文本切成「普通文本段」与「冲突段」的序列。
+ * Split text carrying conflict markers into a sequence of plain segments and
+ * conflict segments.
  *
- * 严格要求标记序列完整（<<<<<<< [|||||||] ======= >>>>>>>）；残缺即抛错，
- * 绝不产出半解析的垃圾结果 —— 那会让宿主写回错误的内容。
+ * The marker sequence must be complete (<<<<<<< [|||||||] ======= >>>>>>>).
+ * Anything malformed throws rather than producing a half-parsed result, which
+ * would make the host write back the wrong content.
  */
 export function scanConflicts(raw: string): Segment[] {
   const lines = raw.split('\n')
@@ -238,7 +245,7 @@ export function scanConflicts(raw: string): Segment[] {
         if (phase !== 'theirs') {
           throw new GitOpError(
             'UNKNOWN',
-            `第 ${startLine + 1} 行开始的冲突标记残缺：在 ======= 之前遇到 >>>>>>>`,
+            `malformed conflict markers starting at line ${startLine + 1}: >>>>>>> before =======`,
           )
         }
         closed = true
@@ -254,7 +261,7 @@ export function scanConflicts(raw: string): Segment[] {
     if (!closed) {
       throw new GitOpError(
         'UNKNOWN',
-        `第 ${startLine + 1} 行开始的冲突标记未闭合（缺少 >>>>>>>）`,
+        `unclosed conflict markers starting at line ${startLine + 1} (no >>>>>>>)`,
       )
     }
 
@@ -280,7 +287,7 @@ export function parseConflictHunks(raw: string): ConflictHunk[] {
     .map(({ kind, ...h }) => h as ConflictHunk)
 }
 
-/** 内容中是否含 NUL 字节 —— git 判定二进制的主要依据。 */
+/** Whether the content holds a NUL byte - git's main test for binary. */
 export function looksBinary(buf: Buffer): boolean {
   const window = buf.subarray(0, Math.min(buf.length, 8000))
   return window.includes(0)

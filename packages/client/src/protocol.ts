@@ -1,9 +1,11 @@
 /**
- * 协议契约 —— client 与 server 共享的唯一定义。
+ * The protocol contract - the single definition shared by client and server.
  *
- * 放在 client 包里是有意为之：这里必须是**纯类型、零运行时依赖**，浏览器可安全引入；
- * server 包以 `import type` 复用它，因此 op 名称、参数或返回类型任何一处不一致，
- * 都会在 `bun run typecheck` 时失败 —— 契约测试即类型检查。
+ * It lives in the client package on purpose: it has to be **types only, with
+ * zero runtime dependencies**, so a browser can import it safely. The server
+ * package reuses it through `import type`, which means any disagreement about
+ * an op name, its parameters or its result fails `npm run typecheck` - the
+ * contract test is the typecheck.
  */
 import type {
   Conflict,
@@ -14,18 +16,19 @@ import type {
   MergeMode,
   PullRequest,
   Resolution,
-} from '@aaxis/gitkit'
+} from '@treenwang/gitkit'
 
 /**
- * 从核心包再导出协议里出现的类型，使浏览器侧只依赖 client 一个包
- * 即可拿到完整类型（这些是纯类型，不产生运行时依赖）。
+ * Re-export the core types that appear in the protocol, so the browser side
+ * gets the full type surface from the client package alone. These are types
+ * only and add no runtime dependency.
  */
 export type {
   Conflict, ConflictHunk, ConflictSide, HunkChoice,
   MergeMethod, MergeMode, PullRequest, Resolution,
 }
 
-// ---------------------------------------------------------------- 自有类型
+// ---------------------------------------------------------------- own types
 
 export type FileStatus = 'clean' | 'modified' | 'added' | 'deleted' | 'conflicted'
 
@@ -56,8 +59,9 @@ export type ReadResult =
   | { binary: true; size: number }
 
 /**
- * PushResult 去掉 worktreeDir 后的形态。
- * worktreeDir 是服务端绝对路径，绝不能发给浏览器 —— 浏览器只持有 sessionId。
+ * PushResult with worktreeDir removed.
+ * worktreeDir is an absolute server path and must never reach the browser,
+ * which holds nothing but a sessionId.
  */
 export type ClientPushResult =
   | { ok: true; pushed: true; pr?: PullRequest; autoMerge?: AutoMergeOutcomeWire }
@@ -72,7 +76,7 @@ export type AutoMergeOutcomeWire =
       detail: string
     }
 
-// ---------------------------------------------------------------- op 表
+// ---------------------------------------------------------------- op table
 
 export type Ops = {
   'status': { params: Record<string, never>; result: SessionStatus }
@@ -103,8 +107,9 @@ export type Ops = {
   }
   'sync.pull': {
     /**
-     * ref 省略时为 `origin/<当前分支>`。它会作为位置参数进入 git 命令，
-     * 因此服务端用 assertValidRevision 校验（尤其是前导 `-`）。
+     * Omitted, ref is `origin/<current branch>`. It enters the git command as a
+     * positional argument, so the server validates it with assertValidRevision -
+     * a leading `-` in particular.
      */
     params: { strategy?: 'merge' | 'rebase'; ref?: string }
     result: { conflicted: boolean }
@@ -126,7 +131,7 @@ export type OpName = keyof Ops
 export type OpParams<K extends OpName> = Ops[K]['params']
 export type OpResult<K extends OpName> = Ops[K]['result']
 
-/** 运行时可枚举的 op 列表，供 server 校验与 client 测试使用。 */
+/** The op list, enumerable at runtime, for server validation and client tests. */
 export const OP_NAMES = [
   'status',
   'files.list', 'files.read', 'files.write', 'files.delete',
@@ -136,9 +141,9 @@ export const OP_NAMES = [
   'conflicts.continue', 'conflicts.abort',
 ] as const satisfies readonly OpName[]
 
-// ---------------------------------------------------------------- 错误
+// ---------------------------------------------------------------- errors
 
-/** GitErrorCode 的全集，再并上传输层自有的几个。 */
+/** Every GitErrorCode, plus the few the transport owns. */
 export type WireErrorCode =
   | 'SESSION_NOT_FOUND'
   | 'OP_NOT_ALLOWED'
@@ -157,8 +162,8 @@ export type WireErrorCode =
 export type WireError = {
   code: WireErrorCode
   message: string
-  /** 仅当服务端显式开启 exposeDetail 时存在。 */
+  /** Present only when the server explicitly enables exposeDetail. */
   detail?: string
-  /** STALE_ETAG 时携带服务端当前内容，供 UI 呈现「覆盖 / 查看差异 / 放弃」。 */
+  /** On STALE_ETAG, carries the server's current content so the UI can offer overwrite, view the difference, or discard. */
   current?: { content: string; etag: string }
 }

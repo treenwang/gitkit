@@ -1,14 +1,15 @@
 import { createElement, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import { useGitkit } from '../context'
 
-/** 合并 class，末位优先；不引 clsx/tailwind-merge，避免为几行逻辑增加依赖。 */
+/** Merge classes, last one wins. No clsx or tailwind-merge - not worth a dependency for a few lines. */
 export function cx(...parts: Array<string | false | undefined | null>): string {
   return parts.filter(Boolean).join(' ')
 }
 
 /**
- * 优先使用宿主注入的组件；未注入则退化为带正确语义 token 类名的原生元素。
- * 只用 shadcn 的稳定 token，使组件自动跟随宿主主题。
+ * Prefer the component the host injected; without one, fall back to a plain
+ * element carrying the right semantic token classes. Only shadcn's stable
+ * tokens are used, so the components follow the host's theme on their own.
  */
 export function Button(
   props: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'default' | 'ghost' },
@@ -53,7 +54,7 @@ export function Muted(props: { children?: ReactNode; className?: string }): Reac
 }
 
 const STATUS_LABEL: Record<string, string> = {
-  modified: '已修改', added: '新增', deleted: '已删除', conflicted: '冲突', clean: '',
+  modified: 'modified', added: 'added', deleted: 'deleted', conflicted: 'conflicted', clean: '',
 }
 
 const STATUS_CLASS: Record<string, string> = {

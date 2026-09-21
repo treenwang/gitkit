@@ -5,12 +5,12 @@ import { cx, Muted, Panel } from './primitives'
 export type DiffViewProps = {
   path?: string
   against?: string
-  /** 换成任意实现（Monaco、react-diff-viewer 等）。不传则用内置的轻量渲染。 */
+  /** Swap in any implementation - Monaco, react-diff-viewer, anything. Omitted, the built-in lightweight rendering is used. */
   renderDiff?: (patch: string) => React.ReactNode
   className?: string
 }
 
-/** 内置的零依赖统一 diff 渲染。git 已输出统一格式，这里只做着色。 */
+/** The built-in zero-dependency unified diff rendering. git already emits unified format; this only colours it. */
 export function renderUnifiedPatch(patch: string): React.ReactNode {
   const lines = patch.split('\n')
   return createElement(
@@ -46,13 +46,13 @@ export function DiffView(props: DiffViewProps): React.ReactElement {
     ...(props.against ? { against: props.against } : {}),
   })
 
-  if (query.isLoading) return createElement(Muted, null, '正在读取改动…')
+  if (query.isLoading) return createElement(Muted, null, 'Loading changes...')
   if (query.error) {
     return createElement(Muted, { className: 'text-destructive' },
-      `无法读取改动：${(query.error as Error).message}`)
+      `Could not read the changes: ${(query.error as Error).message}`)
   }
   const patch = query.data?.patch ?? ''
-  if (!patch) return createElement(Muted, null, '没有改动')
+  if (!patch) return createElement(Muted, null, 'No changes')
 
   const body = props.renderDiff ? props.renderDiff(patch) : renderUnifiedPatch(patch)
   return createElement(
@@ -60,7 +60,7 @@ export function DiffView(props: DiffViewProps): React.ReactElement {
     { className: cx('p-1', props.className) },
     createElement(Fragment, null,
       query.data?.truncated
-        ? createElement(Muted, { className: 'px-1 pb-1' }, '差异过大，仅显示开头部分')
+        ? createElement(Muted, { className: 'px-1 pb-1' }, 'The diff is too large; only the beginning is shown')
         : null,
       body,
     ),

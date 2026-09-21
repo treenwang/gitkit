@@ -45,7 +45,7 @@ export type ProgressEvent = {
   percent?: number
 }
 
-// ---------------------------------------------------------------- 冲突模型
+// ---------------------------------------------------------------- conflict model
 
 export type ConflictType =
   | 'both_modified'
@@ -75,13 +75,14 @@ export type Conflict = {
   ourPath?: string
   theirPath?: string
   hunks?: ConflictHunk[]
-  /** 工作区中带冲突标记的原始内容；仅文本且存在标记时填充。 */
+  /** Raw working-tree content with conflict markers; text only, and only when markers are present. */
   raw?: string
   /**
-   * rebase 期间 git 的 stage 2/3 与 merge 相反（stage 2 是被 rebase 到的上游，
-   * stage 3 才是你正在重放的提交）。本包统一归一化，使 `ours` 永远表示
-   * **你这条分支的改动**；发生过交换时该字段为 true，`raw` 中的标记仍是
-   * git 的原始顺序（未交换）。
+   * During a rebase, git's stages 2 and 3 are the reverse of a merge: stage 2
+   * is the upstream you are rebasing onto, stage 3 the commit being replayed.
+   * This package normalizes that, so `ours` always means **the change on your
+   * branch**. When a swap happened this field is true; the markers inside `raw`
+   * keep git's original, unswapped order.
    */
   sidesSwapped?: boolean
 }
@@ -123,7 +124,7 @@ export type PushResult =
       pushed: false
       reason: 'conflict'
       conflicts: Conflict[]
-      /** 停在 merge 中的 worktree；用 store.attachSession(dir) 接管。 */
+      /** A worktree left mid-merge; take it over with store.attachSession(dir). */
       worktreeDir: string
     }
   | {

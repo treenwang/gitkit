@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { existsSync } from 'node:fs'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { RepoManager } from '../../src/api/repo-manager'
 import type { RepoStore } from '../../src/api/repo-store'
@@ -22,15 +22,15 @@ function codeOf(p: Promise<unknown>): Promise<string> {
   return p.then(() => 'NO_THROW', (e: GitOpError) => e.code)
 }
 
-/** 造一个与 origin/main 冲突的本地提交。 */
+/** Build a local commit that conflicts with origin/main. */
 async function diverge(): Promise<void> {
   await repo.writeFile('docs/a.md', '# ours\n')
   await repo.commit({ message: 'ours' })
   pushToRemote(root, bare, { 'docs/a.md': '# theirs\n' }, { message: 'theirs' })
 }
 
-describe('rebase 冲突', () => {
-  test('rebase 冲突被识别为进行中的操作（没有 MERGE_HEAD 也不能漏判）', async () => {
+describe('rebase conflicts', () => {
+  test('a rebase conflict counts as an operation in progress, even with no MERGE_HEAD', async () => {
     await diverge()
     const r = await repo.pull({ strategy: 'rebase', ref: 'origin/main' })
     expect(r.conflicted).toBe(true)
@@ -41,32 +41,32 @@ describe('rebase 冲突', () => {
     expect(st.conflicted).toContain('docs/a.md')
   })
 
-  test('rebase 中调 commit 抛错并指向 continueRebase', async () => {
+  test('commit during a rebase throws and points at continueRebase', async () => {
     await diverge()
     await repo.pull({ strategy: 'rebase', ref: 'origin/main' })
     await repo.resolveConflicts([{ path: 'docs/a.md', take: 'ours' }])
     expect(await codeOf(repo.commit({ message: 'x' }))).toBe('INVALID_ARGUMENT')
   })
 
-  test("rebase 中 'ours' 归一化为我方改动（git 的 stage 2/3 是反的）", async () => {
+  test("during a rebase 'ours' is normalized to our change, since git's stages 2 and 3 are reversed", async () => {
     await diverge()
     await repo.pull({ strategy: 'rebase', ref: 'origin/main' })
     const c = (await repo.getConflicts()).find((x) => x.path === 'docs/a.md')!
     expect(c.sidesSwapped).toBe(true)
-    expect(c.ours!.content).toBe('# ours\n')      // 我方分支的改动
-    expect(c.theirs!.content).toBe('# theirs\n')  // 被 rebase 到的上游
+    expect(c.ours!.content).toBe('# ours\n')      // the change on our branch
+    expect(c.theirs!.content).toBe('# theirs\n')  // the upstream being rebased onto
     expect(c.hunks![0]!.ourLines).toEqual(['# ours'])
     expect(c.hunks![0]!.theirLines).toEqual(['# theirs'])
   })
 
-  test("rebase 中 resolveByHunks 的 'ours' 同样是我方改动", async () => {
+  test("resolveByHunks during a rebase treats 'ours' as our change too", async () => {
     await diverge()
     await repo.pull({ strategy: 'rebase', ref: 'origin/main' })
     await repo.resolveByHunks('docs/a.md', ['ours'])
     expect(await repo.readFile('docs/a.md')).toBe('# ours\n')
   })
 
-  test("merge 中不做交换，sidesSwapped 不出现", async () => {
+  test("a merge does no swapping, so sidesSwapped never appears", async () => {
     await diverge()
     await repo.pull({ ref: 'origin/main' })
     const c = (await repo.getConflicts()).find((x) => x.path === 'docs/a.md')!
@@ -75,7 +75,7 @@ describe('rebase 冲突', () => {
     expect(c.theirs!.content).toBe('# theirs\n')
   })
 
-  test('continueRebase 收尾后回到干净状态', async () => {
+  test('continueRebase finishes and returns to a clean state', async () => {
     await diverge()
     await repo.pull({ strategy: 'rebase', ref: 'origin/main' })
     await repo.resolveConflicts([{ path: 'docs/a.md', take: 'ours' }])
@@ -86,18 +86,18 @@ describe('rebase 冲突', () => {
     expect(await repo.readFile('docs/a.md')).toBe('# ours\n')
   })
 
-  test('没有进行中的 rebase 时 continueRebase 抛错', async () => {
+  test('continueRebase throws when no rebase is in progress', async () => {
     expect(await codeOf(repo.continueRebase())).toBe('INVALID_ARGUMENT')
   })
 
-  test('abortMerge 能放弃 rebase', async () => {
+  test('abortMerge can abandon a rebase', async () => {
     await diverge()
     await repo.pull({ strategy: 'rebase', ref: 'origin/main' })
     await repo.abortMerge()
     expect((await repo.status()).operation).toBeNull()
   })
 
-  test('withSession 不会删掉停在 rebase 冲突中的 worktree', async () => {
+  test('withSession does not delete a worktree stopped at a rebase conflict', async () => {
     let dir = ''
     const code = await store
       .withSession({ branch: 'feat/rb2', sparsePaths: ['docs'], author: AUTHOR }, async (r) => {
@@ -117,7 +117,7 @@ describe('rebase 冲突', () => {
 })
 
 describe('merge()', () => {
-  test('合并任意 ref', async () => {
+  test('merges an arbitrary ref', async () => {
     pushToRemote(root, bare, { 'docs/m.md': 'merged' }, { message: 'theirs' })
     await store.fetch()
     const r = await repo.merge('origin/main')
@@ -125,17 +125,17 @@ describe('merge()', () => {
     expect(await repo.readFile('docs/m.md')).toBe('merged')
   })
 
-  test('冲突时返回 conflicted 而不抛错', async () => {
+  test('returns conflicted rather than throwing on a conflict', async () => {
     await diverge()
     await store.fetch()
     expect((await repo.merge('origin/main')).conflicted).toBe(true)
   })
 
-  test('不存在的 ref → BRANCH_NOT_FOUND', async () => {
+  test('a missing ref gives BRANCH_NOT_FOUND', async () => {
     expect(await codeOf(repo.merge('origin/does-not-exist'))).toBe('BRANCH_NOT_FOUND')
   })
 
-  test('noFastForward 产生 merge commit', async () => {
+  test('noFastForward produces a merge commit', async () => {
     pushToRemote(root, bare, { 'docs/m.md': 'merged' }, { message: 'theirs' })
     await store.fetch()
     await repo.merge('origin/main', { noFastForward: true })
@@ -145,7 +145,7 @@ describe('merge()', () => {
 })
 
 describe('recover()', () => {
-  test('如实报告进行中的操作但默认不清理', async () => {
+  test('reports the operation in progress honestly but cleans nothing up by default', async () => {
     await diverge()
     await repo.pull({ ref: 'origin/main' })
     const r = await repo.recover()
@@ -153,7 +153,7 @@ describe('recover()', () => {
     expect((await repo.status()).operation).toBe('merge')
   })
 
-  test('显式要求时才 abort', async () => {
+  test('aborts only when explicitly asked', async () => {
     await diverge()
     await repo.pull({ ref: 'origin/main' })
     const r = await repo.recover({ abortOperation: true })
@@ -161,18 +161,18 @@ describe('recover()', () => {
     expect((await repo.status()).operation).toBeNull()
   })
 
-  test('清理残留的 index.lock', async () => {
+  test('clears a leftover index.lock', async () => {
     const lock = join(repo.dir, '.git')
     void lock
     const p = await repo.git(['rev-parse', '--git-path', 'index.lock'])
     const abs = p.startsWith('/') ? p : join(repo.dir, p)
-    await Bun.write(abs, '')
+    writeFileSync(abs, '')
     const r = await repo.recover({ clearIndexLock: true })
     expect(r.indexLockCleared).toBe(true)
     expect(existsSync(abs)).toBe(false)
   })
 
-  test('干净状态下报告 operation: null', async () => {
+  test('reports operation: null in a clean state', async () => {
     expect(await repo.recover()).toEqual({
       operation: null, aborted: false, indexLockCleared: false,
     })

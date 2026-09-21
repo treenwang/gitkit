@@ -10,7 +10,7 @@ export type Layout = {
 
 const ALLOWED_PROTOCOLS = new Set(['https:', 'http:', 'file:'])
 
-/** 路径段中只保留安全字符，避免 `..`、分隔符等进入文件系统路径。 */
+/** Keep only safe characters in a path segment, so `..` and separators cannot reach a filesystem path. */
 function safeSegment(seg: string): string {
   return seg.replace(/\.\./g, '__').replace(/[^A-Za-z0-9._-]/g, '_')
 }
@@ -20,17 +20,17 @@ export function planLayout(root: string, url: string): Layout {
   try {
     parsed = new URL(url)
   } catch {
-    throw new GitOpError('INVALID_ARGUMENT', `无法解析仓库 URL: ${url}`)
+    throw new GitOpError('INVALID_ARGUMENT', `cannot parse the repository URL: ${url}`)
   }
   if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) {
     throw new GitOpError(
       'INVALID_ARGUMENT',
-      `只支持 http(s)/file URL，收到: ${parsed.protocol}`,
+      `only http(s) and file URLs are supported, got: ${parsed.protocol}`,
     )
   }
 
   const rawHost = parsed.hostname || (parsed.protocol === 'file:' ? 'local' : '')
-  if (!rawHost) throw new GitOpError('INVALID_ARGUMENT', `URL 缺少 host: ${url}`)
+  if (!rawHost) throw new GitOpError('INVALID_ARGUMENT', `URL has no host: ${url}`)
   const host = parsed.port
     ? `${rawHost.toLowerCase()}_${parsed.port}`
     : rawHost.toLowerCase()
@@ -42,10 +42,10 @@ export function planLayout(root: string, url: string): Layout {
     .map(safeSegment)
 
   if (segments.length === 0) {
-    throw new GitOpError('INVALID_ARGUMENT', `URL 缺少路径: ${url}`)
+    throw new GitOpError('INVALID_ARGUMENT', `URL has no path: ${url}`)
   }
   if (parsed.protocol !== 'file:' && segments.length < 2) {
-    throw new GitOpError('INVALID_ARGUMENT', `URL 缺少 owner/repo: ${url}`)
+    throw new GitOpError('INVALID_ARGUMENT', `URL has no owner/repo: ${url}`)
   }
 
   const key = [safeSegment(host), ...segments].join('/')
@@ -60,7 +60,7 @@ export function planLayout(root: string, url: string): Layout {
 
 export function worktreeDirFor(worktreeRoot: string, sessionId: string): string {
   if (!/^[A-Za-z0-9._-]+$/.test(sessionId) || sessionId.includes('..')) {
-    throw new GitOpError('INVALID_ARGUMENT', `非法 sessionId: ${sessionId}`)
+    throw new GitOpError('INVALID_ARGUMENT', `invalid sessionId: ${sessionId}`)
   }
   return posix.join(worktreeRoot, sessionId)
 }

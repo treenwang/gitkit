@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 import { resolveWithin } from '../../src/domain/path-guard'
 import type { GitOpError } from '../../src/types'
 
@@ -10,56 +10,56 @@ function codeOf(fn: () => unknown): string {
 }
 
 describe('resolveWithin', () => {
-  test('sparse 范围内的路径通过', () => {
+  test('a path inside the sparse range passes', () => {
     expect(resolveWithin(WT, 'docs/a.md', SPARSE)).toBe('/wt/task-1/docs/a.md')
   })
 
-  test('sparse 目录本身通过', () => {
+  test('the sparse directory itself passes', () => {
     expect(resolveWithin(WT, 'docs', SPARSE)).toBe('/wt/task-1/docs')
   })
 
-  test('规范化冗余片段', () => {
+  test('normalizes redundant segments', () => {
     expect(resolveWithin(WT, './docs/./a.md', SPARSE)).toBe('/wt/task-1/docs/a.md')
   })
 
-  test('全量模式（sparse 为空）放行任意仓内路径', () => {
+  test('full-checkout mode, with sparse empty, allows any path inside the repository', () => {
     expect(resolveWithin(WT, 'src/x.ts', [])).toBe('/wt/task-1/src/x.ts')
   })
 
-  test('穿越到 worktree 之外 → PATH_TRAVERSAL', () => {
+  test('escaping the worktree gives PATH_TRAVERSAL', () => {
     expect(codeOf(() => resolveWithin(WT, '../other/a.md', SPARSE))).toBe('PATH_TRAVERSAL')
   })
 
-  test('深度穿越 → PATH_TRAVERSAL', () => {
+  test('a deep traversal gives PATH_TRAVERSAL', () => {
     expect(codeOf(() => resolveWithin(WT, 'docs/../../etc/passwd', SPARSE))).toBe('PATH_TRAVERSAL')
   })
 
-  test('绝对路径 → PATH_TRAVERSAL', () => {
+  test('an absolute path gives PATH_TRAVERSAL', () => {
     expect(codeOf(() => resolveWithin(WT, '/etc/passwd', SPARSE))).toBe('PATH_TRAVERSAL')
   })
 
-  test('仓内但不在 sparse 范围 → PATH_OUTSIDE_SPARSE', () => {
+  test('inside the repository but outside the sparse range gives PATH_OUTSIDE_SPARSE', () => {
     expect(codeOf(() => resolveWithin(WT, 'src/index.ts', SPARSE))).toBe('PATH_OUTSIDE_SPARSE')
   })
 
-  test('前缀相同但非子目录 → PATH_OUTSIDE_SPARSE', () => {
+  test('a shared prefix that is not a subdirectory gives PATH_OUTSIDE_SPARSE', () => {
     expect(codeOf(() => resolveWithin(WT, 'docsite/a.md', SPARSE))).toBe('PATH_OUTSIDE_SPARSE')
   })
 
-  test('sparse 模式下仓库根文件被拒', () => {
+  test('a file at the repository root is refused in sparse mode', () => {
     expect(codeOf(() => resolveWithin(WT, 'README.md', SPARSE))).toBe('PATH_OUTSIDE_SPARSE')
   })
 
-  test('空路径 → INVALID_ARGUMENT', () => {
+  test('an empty path gives INVALID_ARGUMENT', () => {
     expect(codeOf(() => resolveWithin(WT, '', SPARSE))).toBe('INVALID_ARGUMENT')
   })
 
-  test('解析为 worktree 根自身的路径被拒', () => {
+  test('a path resolving to the worktree root itself is refused', () => {
     expect(codeOf(() => resolveWithin(WT, '.', []))).toBe('INVALID_ARGUMENT')
     expect(codeOf(() => resolveWithin(WT, 'docs/..', []))).toBe('INVALID_ARGUMENT')
   })
 
-  test('.git 目录一律拒绝', () => {
+  test('the .git directory is always refused', () => {
     expect(codeOf(() => resolveWithin(WT, '.git/config', []))).toBe('PATH_TRAVERSAL')
   })
 })

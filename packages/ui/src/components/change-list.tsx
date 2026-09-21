@@ -1,5 +1,5 @@
 import { createElement } from 'react'
-import type { ChangeEntry } from '@aaxis/gitkit-client'
+import type { ChangeEntry } from '@treenwang/gitkit-client'
 import { useChanges } from '../hooks/queries'
 import { Badge, cx, Muted, statusClass, statusLabel } from './primitives'
 
@@ -12,13 +12,13 @@ export type ChangeListProps = {
 export function ChangeList(props: ChangeListProps): React.ReactElement {
   const query = useChanges()
 
-  if (query.isLoading) return createElement(Muted, null, '正在读取改动…')
+  if (query.isLoading) return createElement(Muted, null, 'Loading changes...')
   if (query.error) {
     return createElement(Muted, { className: 'text-destructive' },
-      `无法读取改动：${(query.error as Error).message}`)
+      `Could not read the changes: ${(query.error as Error).message}`)
   }
   const files = query.data ?? []
-  if (files.length === 0) return createElement(Muted, null, '没有未提交的改动')
+  if (files.length === 0) return createElement(Muted, null, 'No uncommitted changes')
 
   return createElement(
     'ul',

@@ -1,56 +1,59 @@
-# @aaxis/git-operation — 计划 1/3：核心（sparse worktree 与基础 git 操作）
+# @treenwang/git-operation — plan 1 of 3: the core (sparse worktrees and basic git operations)
 
-> **状态：已被实现取代（2026-08-29）。**
-> 本计划已全部实现，且实现过程中发现了若干本计划未覆盖的缺陷（rebase 状态、
-> 共享 config 竞态、rebase 的 ours/theirs 反转等）。**代码与 spec 的附录 A 才是
-> 当前事实**，本文保留仅供追溯当初的任务拆分。计划 2/3（冲突层、GitHub 层）未
-> 单独成文，其范围已直接实现并测试。
+> **Status: superseded by the implementation (2026-08-29).**
+> This plan was implemented in full, and implementing it uncovered several
+> defects it did not cover: rebase state, the shared-config race, the reversed
+> ours/theirs during a rebase, and others. **The code and appendix A of the spec
+> are the current truth**; this document is kept only as a record of how the
+> work was originally broken down. Plans 2 and 3 (the conflict layer and the
+> GitHub layer) were never written up separately - their scope was implemented
+> and tested directly.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 交付一个可用的包骨架：能对一个 GitHub 仓库做 partial + sparse clone，为每个并发任务开一个独立 worktree，在其中读写文件、commit、push 分支，并安全释放。
+**Goal:** deliver a working package skeleton that can make a partial, sparse clone of a GitHub repository, open an independent worktree per concurrent task, read and write files in it, commit, push the branch, and release it safely.
 
-**Architecture:** 三层单向依赖。Layer 1 (`exec/`) 是唯一 spawn git 的地方；Layer 2 (`domain/`) 全是不碰 IO 的纯函数；Layer 3 (`api/`) 是 `RepoManager` → `RepoStore` → `GitRepo` 三级门面。并发靠 git worktree 隔离，仅 `fetch` 与 `worktree add/remove` 走进程内 mutex。
+**Architecture:** three layers, dependencies pointing one way. Layer 1 (`exec/`) is the only place that spawns git; layer 2 (`domain/`) is entirely pure functions that never touch IO; layer 3 (`api/`) is the three-level facade `RepoManager`, `RepoStore`, `GitRepo`. Concurrency is isolated by git worktrees, with only `fetch` and `worktree add/remove` going through an in-process mutex.
 
-**Tech Stack:** TypeScript 5.x · Bun（`bun test`）· tsup（ESM + CJS + d.ts）· simple-git · 系统 git ≥ 2.32
+**Tech Stack:** TypeScript 5.x · Bun (`bun test`) · tsup (ESM + CJS + d.ts) · simple-git · system git >= 2.32
 
 **Spec:** `docs/superpowers/specs/2026-08-29-git-operation-package-design.md`
 
 ## Global Constraints
 
-这些约束适用于**每一个**任务，不再逐条重复：
+These constraints apply to **every** task and are not repeated per task:
 
-- 包名 `@aaxis/git-operation`。运行时目标 **Node ≥ 18**；源码**不得使用任何 `Bun.*` API**（Bun 只用于跑测试和开发）。
-- 系统 **git ≥ 2.32**。preflight 必须硬性拦截更低版本。
-- **`src/exec/git-executor.ts` 是唯一 spawn/exec git 的地方。** 其他任何文件出现 `child_process`、`simple-git`、`spawn`、`exec` 均为实现错误。
-- **`src/domain/` 下所有模块不得碰 IO**：不 import `node:fs`、`node:child_process`、不接受回调式 IO。输入输出只能是字符串与普通对象。
-- **`GitRepo` 永不加锁。** 只有 `RepoStore` 可以使用 `StoreMutex`。
-- **token 绝不写入 URL、日志、错误信息、`command` 字段。** 认证一律用 `-c http.extraheader=...` 单次注入。
-- sparse-checkout **只支持 cone 模式**（目录前缀），不支持 glob。
-- 所有 git 调用统一注入 `-c merge.conflictStyle=diff3`。
-- 提交信息用英文，遵循 Conventional Commits（`feat:` / `fix:` / `test:` / `chore:`）。
+- The package is `@treenwang/git-operation`. The runtime target is **Node >= 18**, and the source **must not use any `Bun.*` API** - Bun is only for running tests and development.
+- System **git >= 2.32**. Preflight has to block anything lower.
+- **`src/exec/git-executor.ts` is the only place that spawns or execs git.** `child_process`, `simple-git`, `spawn` or `exec` appearing in any other file is an implementation error.
+- **Nothing under `src/domain/` touches IO**: no importing `node:fs` or `node:child_process`, and no callback-style IO. Inputs and outputs are strings and plain objects only.
+- **`GitRepo` never locks.** Only `RepoStore` may use `StoreMutex`.
+- **The token never reaches the URL, the logs, an error message or the `command` field.** Authentication is always injected per invocation with `-c http.extraheader=...`.
+- sparse-checkout is **cone mode only** - directory prefixes, no globs.
+- Every git call injects `-c merge.conflictStyle=diff3`.
+- Commit messages are in English and follow Conventional Commits (`feat:`, `fix:`, `test:`, `chore:`).
 
 ## File Structure
 
-| 文件 | 职责 |
+| File | Responsibility |
 | --- | --- |
-| `src/types.ts` | 所有公开类型与 `GitOpError`、`GitErrorCode` |
-| `src/exec/sanitize.ts` | 纯函数：从任意文本中抹除 secret |
-| `src/exec/git-executor.ts` | 唯一 spawn git 处：认证注入、超时、progress、脱敏 |
-| `src/exec/store-mutex.ts` | 按 key 分键的进程内串行队列 |
-| `src/exec/fs-gateway.ts` | 受 `PathGuard` 约束的文件读写 |
-| `src/domain/error-mapper.ts` | 纯函数：git stderr → `GitErrorCode` |
-| `src/domain/layout-planner.ts` | 纯函数：`root` + url → store / worktree 路径 |
-| `src/domain/path-guard.ts` | 纯函数：相对路径校验（穿越 + sparse 范围） |
-| `src/domain/sparse-manager.ts` | 纯函数：`sparsePaths` 规范化与 cone 校验 |
-| `src/api/repo-manager.ts` | store 生命周期、clone 去重、preflight、启动清理、gc |
-| `src/api/repo-store.ts` | 共享对象库：fetch、branch、session 生命周期 |
-| `src/api/git-repo.ts` | 绑定单个 worktree 的操作门面 |
-| `src/index.ts` | 只 re-export 公开 API 与类型 |
+| `src/types.ts` | Every public type, plus `GitOpError` and `GitErrorCode` |
+| `src/exec/sanitize.ts` | Pure function: scrub secrets out of arbitrary text |
+| `src/exec/git-executor.ts` | The only place that spawns git: auth injection, timeouts, progress, scrubbing |
+| `src/exec/store-mutex.ts` | An in-process serial queue, keyed |
+| `src/exec/fs-gateway.ts` | File reads and writes, constrained by `PathGuard` |
+| `src/domain/error-mapper.ts` | Pure function: git stderr to a `GitErrorCode` |
+| `src/domain/layout-planner.ts` | Pure function: `root` plus a url to store and worktree paths |
+| `src/domain/path-guard.ts` | Pure function: relative path validation, for traversal and the sparse range |
+| `src/domain/sparse-manager.ts` | Pure function: `sparsePaths` normalization and cone validation |
+| `src/api/repo-manager.ts` | Store lifecycle, clone dedup, preflight, startup cleanup, gc |
+| `src/api/repo-store.ts` | The shared object database: fetch, branches, session lifecycle |
+| `src/api/git-repo.ts` | The operation facade bound to a single worktree |
+| `src/index.ts` | Re-exports the public API and types, nothing else |
 
 ---
 
-### Task 1: 项目脚手架与 secret 脱敏
+### Task 1: project scaffolding and secret scrubbing
 
 **Files:**
 - Create: `package.json`, `tsconfig.json`, `tsup.config.ts`, `src/index.ts`, `src/types.ts`
@@ -58,19 +61,19 @@
 - Test: `tests/unit/sanitize.test.ts`
 
 **Interfaces:**
-- Consumes: 无（首个任务）
+- Consumes: nothing; this is the first task
 - Produces:
   - `class GitOpError extends Error { code: GitErrorCode; detail: string; command?: string; cause?: unknown }`
-  - `type GitErrorCode`（见下方代码，本计划全程使用同一份定义）
+  - `type GitErrorCode` - see the code below; this one definition is used throughout the plan
   - `redact(text: string, secrets: readonly string[]): string`
 
-- [ ] **Step 1: 初始化项目文件**
+- [ ] **Step 1: initialize the project files**
 
-`package.json`：
+`package.json`:
 
 ```json
 {
-  "name": "@aaxis/git-operation",
+  "name": "@treenwang/git-operation",
   "version": "0.0.0",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -136,7 +139,7 @@ export default defineConfig({
 })
 ```
 
-- [ ] **Step 2: 写 `src/types.ts`**
+- [ ] **Step 2: write `src/types.ts`**
 
 ```ts
 export type GitErrorCode =
@@ -185,7 +188,7 @@ export type ProgressEvent = {
 }
 ```
 
-- [ ] **Step 3: 写失败的脱敏测试**
+- [ ] **Step 3: write the failing scrubbing tests**
 
 `tests/unit/sanitize.test.ts`：
 
@@ -194,11 +197,11 @@ import { describe, expect, test } from 'bun:test'
 import { redact } from '../../src/exec/sanitize'
 
 describe('redact', () => {
-  test('替换明文 secret', () => {
+  test('replaces a plaintext secret', () => {
     expect(redact('token is ghp_abc123', ['ghp_abc123'])).toBe('token is ***')
   })
 
-  test('替换 base64 编码后的 secret（http.extraheader 的形式）', () => {
+  test('replaces the base64-encoded secret, the form http.extraheader uses', () => {
     const token = 'ghp_abc123'
     const encoded = Buffer.from(`x-access-token:${token}`).toString('base64')
     const line = `git -c http.extraheader=AUTHORIZATION: basic ${encoded} fetch`
@@ -207,30 +210,30 @@ describe('redact', () => {
     expect(out).toContain('***')
   })
 
-  test('多次出现全部替换', () => {
+  test('replaces every occurrence', () => {
     expect(redact('a T b T c', ['T'])).toBe('a *** b *** c')
   })
 
-  test('空 secret 被忽略，不产生全文替换', () => {
+  test('an empty secret is ignored rather than replacing everything', () => {
     expect(redact('hello', ['', '  '])).toBe('hello')
   })
 
-  test('secret 含正则元字符时按字面量替换', () => {
+  test('a secret containing regex metacharacters is replaced literally', () => {
     expect(redact('v=a.b*c', ['a.b*c'])).toBe('v=***')
   })
 
-  test('无 secret 时原样返回', () => {
+  test('returns the text unchanged when there is no secret', () => {
     expect(redact('nothing to hide', [])).toBe('nothing to hide')
   })
 })
 ```
 
-- [ ] **Step 4: 运行测试，确认失败**
+- [ ] **Step 4: run the tests and confirm they fail**
 
 Run: `bun test tests/unit/sanitize.test.ts`
 Expected: FAIL —— `Cannot find module '../../src/exec/sanitize'`
 
-- [ ] **Step 5: 实现 `src/exec/sanitize.ts`**
+- [ ] **Step 5: implement `src/exec/sanitize.ts`**
 
 ```ts
 function escapeRegExp(s: string): string {
@@ -238,8 +241,9 @@ function escapeRegExp(s: string): string {
 }
 
 /**
- * 从任意文本中抹除 secret。除明文外，还会抹除 `x-access-token:<secret>`
- * 的 base64 形式 —— 这是 http.extraheader 注入后会出现在命令行里的样子。
+ * Scrub secrets out of arbitrary text. Besides the literal value, this also
+ * scrubs the base64 form of `x-access-token:<secret>` - the shape the secret
+ * takes on the command line once http.extraheader has injected it.
  */
 export function redact(text: string, secrets: readonly string[]): string {
   let out = text
@@ -258,16 +262,16 @@ export function redact(text: string, secrets: readonly string[]): string {
 }
 ```
 
-- [ ] **Step 6: 写最小的 `src/index.ts`**
+- [ ] **Step 6: write a minimal `src/index.ts`**
 
 ```ts
 export * from './types'
 ```
 
-- [ ] **Step 7: 运行测试与类型检查**
+- [ ] **Step 7: run the tests and the typecheck**
 
 Run: `bun install && bun test tests/unit/sanitize.test.ts && bun run typecheck`
-Expected: 6 tests PASS，typecheck 无错误
+Expected: 6 tests PASS and a clean typecheck
 
 - [ ] **Step 8: Commit**
 
@@ -278,17 +282,17 @@ git commit -m "feat: scaffold package and add secret redaction"
 
 ---
 
-### Task 2: ErrorMapper（纯函数）
+### Task 2: ErrorMapper, a pure function
 
 **Files:**
 - Create: `src/domain/error-mapper.ts`
 - Test: `tests/unit/error-mapper.test.ts`
 
 **Interfaces:**
-- Consumes: `GitErrorCode`（Task 1）
+- Consumes: `GitErrorCode` from task 1
 - Produces: `mapGitError(stderr: string, exitCode?: number): GitErrorCode`
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: write the failing tests**
 
 `tests/unit/error-mapper.test.ts`：
 
@@ -298,15 +302,15 @@ import { mapGitError } from '../../src/domain/error-mapper'
 
 describe('mapGitError', () => {
   const cases: Array<[string, string, string]> = [
-    ['认证失败', "fatal: Authentication failed for 'https://github.com/a/b.git/'", 'AUTH_FAILED'],
+    ['authentication failure', "fatal: Authentication failed for 'https://github.com/a/b.git/'", 'AUTH_FAILED'],
     ['401', 'fatal: unable to access: The requested URL returned error: 403', 'AUTH_FAILED'],
-    ['DNS 失败', 'fatal: unable to access: Could not resolve host: github.com', 'NETWORK'],
-    ['连接超时', 'fatal: unable to access: Failed to connect to github.com port 443: Connection timed out', 'NETWORK'],
-    ['非仓库', 'fatal: not a git repository (or any of the parent directories): .git', 'NOT_A_REPO'],
-    ['工作区脏', 'error: Your local changes to the following files would be overwritten by merge:', 'DIRTY_WORKTREE'],
-    ['merge 进行中', 'fatal: You have not concluded your merge (MERGE_HEAD exists).', 'MERGE_IN_PROGRESS'],
-    ['分支已被占用', "fatal: 'feat/x' is already checked out at '/data/wt/a'", 'BRANCH_IN_USE'],
-    ['分支已存在', "fatal: a branch named 'feat/x' already exists", 'BRANCH_EXISTS'],
+    ['DNS failure', 'fatal: unable to access: Could not resolve host: github.com', 'NETWORK'],
+    ['connection timeout', 'fatal: unable to access: Failed to connect to github.com port 443: Connection timed out', 'NETWORK'],
+    ['not a repository', 'fatal: not a git repository (or any of the parent directories): .git', 'NOT_A_REPO'],
+    ['dirty worktree', 'error: Your local changes to the following files would be overwritten by merge:', 'DIRTY_WORKTREE'],
+    ['merge in progress', 'fatal: You have not concluded your merge (MERGE_HEAD exists).', 'MERGE_IN_PROGRESS'],
+    ['branch already in use', "fatal: 'feat/x' is already checked out at '/data/wt/a'", 'BRANCH_IN_USE'],
+    ['branch already exists', "fatal: a branch named 'feat/x' already exists", 'BRANCH_EXISTS'],
   ]
 
   for (const [name, stderr, expected] of cases) {
@@ -315,33 +319,33 @@ describe('mapGitError', () => {
     })
   }
 
-  test('无法识别时返回 UNKNOWN，绝不猜测', () => {
+  test('returns UNKNOWN when nothing matches, and never guesses', () => {
     expect(mapGitError('fatal: something nobody has ever seen before')).toBe('UNKNOWN')
   })
 
-  test('空 stderr 返回 UNKNOWN', () => {
+  test('empty stderr returns UNKNOWN', () => {
     expect(mapGitError('')).toBe('UNKNOWN')
   })
 
-  test('匹配不区分大小写', () => {
+  test('matching ignores case', () => {
     expect(mapGitError('FATAL: AUTHENTICATION FAILED for x')).toBe('AUTH_FAILED')
   })
 })
 ```
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [ ] **Step 2: run the tests and confirm they fail**
 
 Run: `bun test tests/unit/error-mapper.test.ts`
-Expected: FAIL —— 模块不存在
+Expected: FAIL - the module does not exist
 
-- [ ] **Step 3: 实现 `src/domain/error-mapper.ts`**
+- [ ] **Step 3: implement `src/domain/error-mapper.ts`**
 
 ```ts
 import type { GitErrorCode } from '../types'
 
 /**
- * stderr 模式 → 错误码。顺序敏感：先匹配者胜。
- * 匹配不中一律返回 UNKNOWN —— 猜错的错误码比没有错误码更有害。
+ * stderr patterns to error codes. Order matters: first match wins.
+ * Anything unmatched returns UNKNOWN - a wrong code is worse than no code.
  */
 const RULES: Array<[RegExp, GitErrorCode]> = [
   [/authentication failed|invalid username or password|returned error: 40[13]/i, 'AUTH_FAILED'],
@@ -362,7 +366,7 @@ export function mapGitError(stderr: string, exitCode?: number): GitErrorCode {
 }
 ```
 
-- [ ] **Step 4: 运行测试，确认通过**
+- [ ] **Step 4: run the tests and confirm they pass**
 
 Run: `bun test tests/unit/error-mapper.test.ts`
 Expected: 12 tests PASS
@@ -376,7 +380,7 @@ git commit -m "feat: map git stderr to structured error codes"
 
 ---
 
-### Task 3: LayoutPlanner（纯函数）
+### Task 3: LayoutPlanner, a pure function
 
 **Files:**
 - Create: `src/domain/layout-planner.ts`
@@ -388,9 +392,9 @@ git commit -m "feat: map git stderr to structured error codes"
   - `planLayout(root: string, url: string): { key: string; repoDir: string; storeDir: string; worktreeRoot: string }`
   - `worktreeDirFor(worktreeRoot: string, sessionId: string): string`
 
-`key` 是 store 的唯一标识（也用作 `StoreMutex` 的键）。
+`key` uniquely identifies a store and doubles as the `StoreMutex` key.
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: write the failing tests**
 
 `tests/unit/layout-planner.test.ts`：
 
@@ -400,7 +404,7 @@ import { planLayout, worktreeDirFor } from '../../src/domain/layout-planner'
 import { GitOpError } from '../../src/types'
 
 describe('planLayout', () => {
-  test('标准 https url', () => {
+  test('a standard https url', () => {
     const l = planLayout('/data/repos', 'https://github.com/acme/web')
     expect(l.key).toBe('github.com/acme/web')
     expect(l.repoDir).toBe('/data/repos/github.com/acme/web')
@@ -408,58 +412,58 @@ describe('planLayout', () => {
     expect(l.worktreeRoot).toBe('/data/repos/github.com/acme/web/wt')
   })
 
-  test('去掉 .git 后缀', () => {
+  test('strips the .git suffix', () => {
     expect(planLayout('/r', 'https://github.com/acme/web.git').key).toBe('github.com/acme/web')
   })
 
-  test('去掉尾部斜杠', () => {
+  test('strips a trailing slash', () => {
     expect(planLayout('/r', 'https://github.com/acme/web/').key).toBe('github.com/acme/web')
   })
 
-  test('host 小写化，path 保留大小写', () => {
+  test('the host is lowercased and the path keeps its case', () => {
     expect(planLayout('/r', 'https://GitHub.COM/Acme/Web').key).toBe('github.com/Acme/Web')
   })
 
-  test('带端口的自建 GHE', () => {
+  test('a self-hosted GHE with a port', () => {
     expect(planLayout('/r', 'https://git.corp.io:8443/g/p').key).toBe('git.corp.io_8443/g/p')
   })
 
-  test('url 中的凭据被丢弃，不进入路径', () => {
+  test('credentials in the url are dropped and never reach the path', () => {
     const l = planLayout('/r', 'https://user:tok@github.com/acme/web')
     expect(l.key).toBe('github.com/acme/web')
     expect(l.repoDir).not.toContain('tok')
   })
 
-  test('路径段中的可疑字符被替换', () => {
+  test('suspicious characters in a path segment are replaced', () => {
     expect(planLayout('/r', 'https://github.com/a..b/c').key).toBe('github.com/a__b/c')
   })
 
-  test('非 http(s) url 抛 INVALID_ARGUMENT', () => {
+  test('a url that is not http(s) throws INVALID_ARGUMENT', () => {
     expect(() => planLayout('/r', 'git@github.com:acme/web.git')).toThrow(GitOpError)
   })
 
-  test('缺少 owner/repo 抛 INVALID_ARGUMENT', () => {
+  test('a missing owner/repo throws INVALID_ARGUMENT', () => {
     expect(() => planLayout('/r', 'https://github.com/')).toThrow(GitOpError)
   })
 })
 
 describe('worktreeDirFor', () => {
-  test('拼接 sessionId', () => {
+  test('joins on the sessionId', () => {
     expect(worktreeDirFor('/r/wt', 'abc123')).toBe('/r/wt/abc123')
   })
 
-  test('sessionId 含分隔符时抛错', () => {
+  test('a sessionId containing a separator throws', () => {
     expect(() => worktreeDirFor('/r/wt', '../escape')).toThrow(GitOpError)
   })
 })
 ```
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [ ] **Step 2: run the tests and confirm they fail**
 
 Run: `bun test tests/unit/layout-planner.test.ts`
-Expected: FAIL —— 模块不存在
+Expected: FAIL - the module does not exist
 
-- [ ] **Step 3: 实现 `src/domain/layout-planner.ts`**
+- [ ] **Step 3: implement `src/domain/layout-planner.ts`**
 
 ```ts
 import { posix } from 'node:path'
@@ -472,7 +476,7 @@ export type Layout = {
   worktreeRoot: string
 }
 
-/** 路径段中只保留安全字符，避免 `..`、分隔符等进入文件系统路径。 */
+/** Keep only safe characters in a path segment, so `..` and separators cannot reach a filesystem path. */
 function safeSegment(seg: string): string {
   return seg.replace(/[^A-Za-z0-9._-]/g, '_').replace(/\.\./g, '__')
 }
@@ -482,10 +486,10 @@ export function planLayout(root: string, url: string): Layout {
   try {
     parsed = new URL(url)
   } catch {
-    throw new GitOpError('INVALID_ARGUMENT', `无法解析仓库 URL: ${url}`)
+    throw new GitOpError('INVALID_ARGUMENT', `cannot parse the repository URL: ${url}`)
   }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    throw new GitOpError('INVALID_ARGUMENT', `只支持 http(s) URL，收到: ${parsed.protocol}`)
+    throw new GitOpError('INVALID_ARGUMENT', `only http(s) URLs are supported, got: ${parsed.protocol}`)
   }
 
   const host = parsed.port
@@ -499,7 +503,7 @@ export function planLayout(root: string, url: string): Layout {
     .map(safeSegment)
 
   if (segments.length < 2) {
-    throw new GitOpError('INVALID_ARGUMENT', `URL 缺少 owner/repo: ${url}`)
+    throw new GitOpError('INVALID_ARGUMENT', `URL has no owner/repo: ${url}`)
   }
 
   const key = [safeSegment(host), ...segments].join('/')
@@ -514,13 +518,13 @@ export function planLayout(root: string, url: string): Layout {
 
 export function worktreeDirFor(worktreeRoot: string, sessionId: string): string {
   if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) {
-    throw new GitOpError('INVALID_ARGUMENT', `非法 sessionId: ${sessionId}`)
+    throw new GitOpError('INVALID_ARGUMENT', `invalid sessionId: ${sessionId}`)
   }
   return posix.join(worktreeRoot, sessionId)
 }
 ```
 
-- [ ] **Step 4: 运行测试，确认通过**
+- [ ] **Step 4: run the tests and confirm they pass**
 
 Run: `bun test tests/unit/layout-planner.test.ts`
 Expected: 11 tests PASS
@@ -534,7 +538,7 @@ git commit -m "feat: derive store and worktree paths from repo url"
 
 ---
 
-### Task 4: SparseManager（纯函数）
+### Task 4: SparseManager, a pure function
 
 **Files:**
 - Create: `src/domain/sparse-manager.ts`
@@ -546,9 +550,9 @@ git commit -m "feat: derive store and worktree paths from repo url"
   - `normalizeSparsePaths(input?: readonly (string | SparsePath)[]): SparsePath[]`
   - `isFullCheckout(paths: SparsePath[]): boolean`
 
-规范化规则：转 POSIX 分隔符、去首尾斜杠、去重、**丢弃被父目录覆盖的子路径**（cone 模式下父目录已包含子目录）。校验规则：拒绝 glob 字符、拒绝 `..`、拒绝绝对路径、拒绝空串。
+Normalization: convert to POSIX separators, strip leading and trailing slashes, deduplicate, and **drop any subpath a parent directory already covers**, since in cone mode a parent already includes its subdirectories. Validation: refuse glob characters, `..`, absolute paths and the empty string.
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: write the failing tests**
 
 `tests/unit/sparse-manager.test.ts`：
 
@@ -558,39 +562,39 @@ import { isFullCheckout, normalizeSparsePaths } from '../../src/domain/sparse-ma
 import { GitOpError } from '../../src/types'
 
 describe('normalizeSparsePaths', () => {
-  test('undefined 与空数组都表示全量 checkout', () => {
+  test('undefined and an empty array both mean a full checkout', () => {
     expect(normalizeSparsePaths(undefined)).toEqual([])
     expect(normalizeSparsePaths([])).toEqual([])
     expect(isFullCheckout([])).toBe(true)
   })
 
-  test('字符串简写默认 requireChecks: true（保守）', () => {
+  test('the string shorthand defaults to requireChecks: true, the conservative choice', () => {
     expect(normalizeSparsePaths(['docs'])).toEqual([{ path: 'docs', requireChecks: true }])
   })
 
-  test('对象形式保留 requireChecks', () => {
+  test('the object form keeps requireChecks', () => {
     expect(normalizeSparsePaths([{ path: 'docs', requireChecks: false }]))
       .toEqual([{ path: 'docs', requireChecks: false }])
   })
 
-  test('对象形式省略 requireChecks 时默认 true', () => {
+  test('the object form defaults requireChecks to true when it is omitted', () => {
     expect(normalizeSparsePaths([{ path: 'src' }])).toEqual([{ path: 'src', requireChecks: true }])
   })
 
-  test('反斜杠转为正斜杠，首尾斜杠被去掉', () => {
+  test('backslashes become forward slashes and leading and trailing slashes are stripped', () => {
     expect(normalizeSparsePaths(['\\docs\\api\\'])[0]!.path).toBe('docs/api')
   })
 
-  test('重复路径去重', () => {
+  test('duplicate paths are deduplicated', () => {
     expect(normalizeSparsePaths(['docs', 'docs/'])).toHaveLength(1)
   })
 
-  test('被父目录覆盖的子路径被丢弃', () => {
+  test('a subpath already covered by a parent directory is dropped', () => {
     const out = normalizeSparsePaths(['docs', 'docs/api'])
     expect(out).toEqual([{ path: 'docs', requireChecks: true }])
   })
 
-  test('父目录的 requireChecks 取最保守值', () => {
+  test('a parent directory takes the most conservative requireChecks', () => {
     const out = normalizeSparsePaths([
       { path: 'docs', requireChecks: false },
       { path: 'docs/api', requireChecks: true },
@@ -598,56 +602,56 @@ describe('normalizeSparsePaths', () => {
     expect(out).toEqual([{ path: 'docs', requireChecks: true }])
   })
 
-  test('前缀相似但非父子关系的路径都保留', () => {
+  test('paths with a similar prefix but no parent relationship are all kept', () => {
     const out = normalizeSparsePaths(['docs', 'docsite'])
     expect(out.map((p) => p.path).sort()).toEqual(['docs', 'docsite'])
   })
 
-  test('输出按 path 排序，结果稳定', () => {
+  test('output is sorted by path, so results are stable', () => {
     expect(normalizeSparsePaths(['b', 'a']).map((p) => p.path)).toEqual(['a', 'b'])
   })
 
   const bad: Array<[string, string]> = [
-    ['glob 星号', 'docs/*'],
-    ['glob 问号', 'docs/?.md'],
-    ['glob 方括号', 'docs/[ab]'],
-    ['否定前缀', '!docs'],
-    ['父目录穿越', '../etc'],
-    ['内嵌穿越', 'docs/../../etc'],
-    ['绝对路径', '/etc'],
-    ['空串', ''],
-    ['纯空白', '   '],
+    ['glob star', 'docs/*'],
+    ['glob question mark', 'docs/?.md'],
+    ['glob brackets', 'docs/[ab]'],
+    ['negation prefix', '!docs'],
+    ['parent traversal', '../etc'],
+    ['embedded traversal', 'docs/../../etc'],
+    ['absolute path', '/etc'],
+    ['empty string', ''],
+    ['whitespace only', '   '],
   ]
   for (const [name, p] of bad) {
-    test(`拒绝：${name}`, () => {
+    test(`refuses: ${name}`, () => {
       expect(() => normalizeSparsePaths([p])).toThrow(GitOpError)
     })
   }
 })
 ```
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [ ] **Step 2: run the tests and confirm they fail**
 
 Run: `bun test tests/unit/sparse-manager.test.ts`
-Expected: FAIL —— 模块不存在
+Expected: FAIL - the module does not exist
 
-- [ ] **Step 3: 实现 `src/domain/sparse-manager.ts`**
+- [ ] **Step 3: implement `src/domain/sparse-manager.ts`**
 
 ```ts
 import { GitOpError, type SparsePath } from '../types'
 
 function validate(raw: string): string {
   const p = raw.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').trim()
-  if (!p) throw new GitOpError('INVALID_ARGUMENT', 'sparse path 不能为空')
-  if (raw.startsWith('/')) throw new GitOpError('INVALID_ARGUMENT', `sparse path 必须是相对路径: ${raw}`)
+  if (!p) throw new GitOpError('INVALID_ARGUMENT', 'a sparse path cannot be empty')
+  if (raw.startsWith('/')) throw new GitOpError('INVALID_ARGUMENT', `a sparse path must be relative: ${raw}`)
   if (/[*?[\]!]/.test(p)) {
     throw new GitOpError(
       'INVALID_ARGUMENT',
-      `sparse path 不支持通配符（只支持 cone 模式的目录前缀）: ${raw}`,
+      `sparse paths do not support wildcards; only cone-mode directory prefixes: ${raw}`,
     )
   }
   if (p.split('/').some((seg) => seg === '..' || seg === '.')) {
-    throw new GitOpError('INVALID_ARGUMENT', `sparse path 不得包含 . 或 ..: ${raw}`)
+    throw new GitOpError('INVALID_ARGUMENT', `a sparse path must not contain . or ..: ${raw}`)
   }
   return p
 }
@@ -666,7 +670,7 @@ export function normalizeSparsePaths(
     const raw = typeof item === 'string' ? item : item.path
     const requireChecks = typeof item === 'string' ? true : item.requireChecks ?? true
     const path = validate(raw)
-    // 同路径重复出现时取最保守值
+    // When one path appears twice, take the most conservative value
     merged.set(path, (merged.get(path) ?? false) || requireChecks)
   }
 
@@ -675,7 +679,7 @@ export function normalizeSparsePaths(
   for (const path of sorted) {
     const ancestor = kept.find((k) => isAncestor(k.path, path))
     if (ancestor) {
-      // 子路径被父目录覆盖：丢弃自身，但把 requireChecks 向上合并为最保守值
+      // A parent covers this subpath: drop it, but merge its requireChecks upward as the most conservative value
       ancestor.requireChecks = ancestor.requireChecks || merged.get(path)!
       continue
     }
@@ -689,7 +693,7 @@ export function isFullCheckout(paths: readonly SparsePath[]): boolean {
 }
 ```
 
-- [ ] **Step 4: 运行测试，确认通过**
+- [ ] **Step 4: run the tests and confirm they pass**
 
 Run: `bun test tests/unit/sparse-manager.test.ts`
 Expected: 19 tests PASS
@@ -703,7 +707,7 @@ git commit -m "feat: normalize and validate cone-mode sparse paths"
 
 ---
 
-### Task 5: PathGuard（纯函数）
+### Task 5: PathGuard, a pure function
 
 **Files:**
 - Create: `src/domain/path-guard.ts`
@@ -713,9 +717,9 @@ git commit -m "feat: normalize and validate cone-mode sparse paths"
 - Consumes: `SparsePath`, `GitOpError`（Task 1）
 - Produces: `resolveWithin(worktreeDir: string, relPath: string, sparse: readonly SparsePath[]): string`
 
-返回绝对路径。越界抛 `PATH_TRAVERSAL`，出 sparse 范围抛 `PATH_OUTSIDE_SPARSE`。
+Returns an absolute path. Leaving the worktree throws `PATH_TRAVERSAL`; leaving the sparse range throws `PATH_OUTSIDE_SPARSE`.
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: write the failing tests**
 
 `tests/unit/path-guard.test.ts`：
 
@@ -732,72 +736,73 @@ function codeOf(fn: () => unknown): string {
 }
 
 describe('resolveWithin', () => {
-  test('sparse 范围内的路径通过', () => {
+  test('a path inside the sparse range passes', () => {
     expect(resolveWithin(WT, 'docs/a.md', SPARSE)).toBe('/wt/task-1/docs/a.md')
   })
 
-  test('sparse 目录本身通过', () => {
+  test('the sparse directory itself passes', () => {
     expect(resolveWithin(WT, 'docs', SPARSE)).toBe('/wt/task-1/docs')
   })
 
-  test('规范化冗余片段', () => {
+  test('normalizes redundant segments', () => {
     expect(resolveWithin(WT, './docs/./a.md', SPARSE)).toBe('/wt/task-1/docs/a.md')
   })
 
-  test('全量模式（sparse 为空）放行任意仓内路径', () => {
+  test('full-checkout mode, with sparse empty, allows any path inside the repository', () => {
     expect(resolveWithin(WT, 'src/x.ts', [])).toBe('/wt/task-1/src/x.ts')
   })
 
-  test('穿越到 worktree 之外 → PATH_TRAVERSAL', () => {
+  test('escaping the worktree gives PATH_TRAVERSAL', () => {
     expect(codeOf(() => resolveWithin(WT, '../other/a.md', SPARSE))).toBe('PATH_TRAVERSAL')
   })
 
-  test('深度穿越 → PATH_TRAVERSAL', () => {
+  test('a deep traversal gives PATH_TRAVERSAL', () => {
     expect(codeOf(() => resolveWithin(WT, 'docs/../../etc/passwd', SPARSE))).toBe('PATH_TRAVERSAL')
   })
 
-  test('绝对路径 → PATH_TRAVERSAL', () => {
+  test('an absolute path gives PATH_TRAVERSAL', () => {
     expect(codeOf(() => resolveWithin(WT, '/etc/passwd', SPARSE))).toBe('PATH_TRAVERSAL')
   })
 
-  test('仓内但不在 sparse 范围 → PATH_OUTSIDE_SPARSE', () => {
+  test('inside the repository but outside the sparse range gives PATH_OUTSIDE_SPARSE', () => {
     expect(codeOf(() => resolveWithin(WT, 'src/index.ts', SPARSE))).toBe('PATH_OUTSIDE_SPARSE')
   })
 
-  test('前缀相同但非子目录 → PATH_OUTSIDE_SPARSE', () => {
+  test('a shared prefix that is not a subdirectory gives PATH_OUTSIDE_SPARSE', () => {
     expect(codeOf(() => resolveWithin(WT, 'docsite/a.md', SPARSE))).toBe('PATH_OUTSIDE_SPARSE')
   })
 
-  test('仓库根文件在 sparse 模式下被拒（cone 模式虽保留根文件，但本包不允许写）', () => {
+  test('a repository root file is refused in sparse mode - cone mode keeps root files, but this package will not write them', () => {
     expect(codeOf(() => resolveWithin(WT, 'README.md', SPARSE))).toBe('PATH_OUTSIDE_SPARSE')
   })
 
-  test('空路径 → INVALID_ARGUMENT', () => {
+  test('an empty path gives INVALID_ARGUMENT', () => {
     expect(codeOf(() => resolveWithin(WT, '', SPARSE))).toBe('INVALID_ARGUMENT')
   })
 
-  test('.git 目录一律拒绝', () => {
+  test('the .git directory is always refused', () => {
     expect(codeOf(() => resolveWithin(WT, '.git/config', []))).toBe('PATH_TRAVERSAL')
   })
 })
 ```
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [ ] **Step 2: run the tests and confirm they fail**
 
 Run: `bun test tests/unit/path-guard.test.ts`
-Expected: FAIL —— 模块不存在
+Expected: FAIL - the module does not exist
 
-- [ ] **Step 3: 实现 `src/domain/path-guard.ts`**
+- [ ] **Step 3: implement `src/domain/path-guard.ts`**
 
 ```ts
 import { posix } from 'node:path'
 import { GitOpError, type SparsePath } from '../types'
 
 /**
- * 校验并解析 worktree 内的相对路径。
+ * Validate and resolve a relative path inside the worktree.
  *
- * 注意：这是纯函数，不做符号链接解析（那需要 IO）。调用方 FsGateway
- * 在真正写入前还需用 lstat 拒绝符号链接 —— 见 exec/fs-gateway.ts。
+ * Note that this is a pure function and does not resolve symlinks, which would
+ * need IO. Its caller FsGateway has to refuse symlinks with lstat before
+ * writing - see exec/fs-gateway.ts.
  */
 export function resolveWithin(
   worktreeDir: string,
@@ -805,20 +810,20 @@ export function resolveWithin(
   sparse: readonly SparsePath[],
 ): string {
   if (!relPath || !relPath.trim()) {
-    throw new GitOpError('INVALID_ARGUMENT', '路径不能为空')
+    throw new GitOpError('INVALID_ARGUMENT', 'the path cannot be empty')
   }
 
   const normalizedInput = relPath.replace(/\\/g, '/')
   if (posix.isAbsolute(normalizedInput)) {
-    throw new GitOpError('PATH_TRAVERSAL', `不接受绝对路径: ${relPath}`)
+    throw new GitOpError('PATH_TRAVERSAL', `absolute paths are not accepted: ${relPath}`)
   }
 
   const rel = posix.normalize(normalizedInput).replace(/^\.\//, '').replace(/\/+$/, '')
   if (rel === '..' || rel.startsWith('../')) {
-    throw new GitOpError('PATH_TRAVERSAL', `路径越出 worktree: ${relPath}`)
+    throw new GitOpError('PATH_TRAVERSAL', `path escapes the worktree: ${relPath}`)
   }
   if (rel === '.git' || rel.startsWith('.git/')) {
-    throw new GitOpError('PATH_TRAVERSAL', `不允许访问 .git 目录: ${relPath}`)
+    throw new GitOpError('PATH_TRAVERSAL', `access to the .git directory is not allowed: ${relPath}`)
   }
 
   if (sparse.length > 0) {
@@ -827,7 +832,7 @@ export function resolveWithin(
       const allowed = sparse.map((s) => s.path).join(', ')
       throw new GitOpError(
         'PATH_OUTSIDE_SPARSE',
-        `路径 ${rel} 不在 sparse 范围内（允许: ${allowed}）`,
+        `path ${rel} is outside the sparse range (allowed: ${allowed})`,
       )
     }
   }
@@ -836,7 +841,7 @@ export function resolveWithin(
 }
 ```
 
-- [ ] **Step 4: 运行测试，确认通过**
+- [ ] **Step 4: run the tests and confirm they pass**
 
 Run: `bun test tests/unit/path-guard.test.ts`
 Expected: 12 tests PASS
@@ -850,17 +855,17 @@ git commit -m "feat: guard worktree paths against traversal and sparse escape"
 
 ---
 
-### Task 6: StoreMutex（按 key 串行化）
+### Task 6: StoreMutex, serializing by key
 
 **Files:**
 - Create: `src/exec/store-mutex.ts`
 - Test: `tests/unit/store-mutex.test.ts`
 
 **Interfaces:**
-- Consumes: 无
+- Consumes: nothing
 - Produces: `class StoreMutex { run<T>(key: string, fn: () => Promise<T>): Promise<T> }`
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: write the failing tests**
 
 `tests/unit/store-mutex.test.ts`：
 
@@ -871,7 +876,7 @@ import { StoreMutex } from '../../src/exec/store-mutex'
 const tick = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 describe('StoreMutex', () => {
-  test('同 key 的任务串行执行，不重叠', async () => {
+  test('tasks with the same key run serially and never overlap', async () => {
     const m = new StoreMutex()
     const events: string[] = []
     const job = (name: string, ms: number) => async () => {
@@ -884,7 +889,7 @@ describe('StoreMutex', () => {
     expect(events).toEqual(['a:start', 'a:end', 'b:start', 'b:end'])
   })
 
-  test('不同 key 的任务可并发', async () => {
+  test('tasks with different keys run concurrently', async () => {
     const m = new StoreMutex()
     const events: string[] = []
     const job = (name: string, ms: number) => async () => {
@@ -894,21 +899,21 @@ describe('StoreMutex', () => {
     }
     await Promise.all([m.run('k1', job('a', 20)), m.run('k2', job('b', 1))])
     expect(events[0]).toBe('a:start')
-    expect(events[1]).toBe('b:start')  // b 未被 a 阻塞
+    expect(events[1]).toBe('b:start')  // b was not blocked by a
   })
 
-  test('返回值透传', async () => {
+  test('return values pass through', async () => {
     const m = new StoreMutex()
     await expect(m.run('k', async () => 42)).resolves.toBe(42)
   })
 
-  test('抛错后队列不卡死，后续任务照常执行', async () => {
+  test('a throw does not wedge the queue and later tasks still run', async () => {
     const m = new StoreMutex()
     await expect(m.run('k', async () => { throw new Error('boom') })).rejects.toThrow('boom')
     await expect(m.run('k', async () => 'ok')).resolves.toBe('ok')
   })
 
-  test('队列排空后不残留 key，避免内存泄漏', async () => {
+  test('no key is left behind once the queue drains, so nothing leaks', async () => {
     const m = new StoreMutex()
     await m.run('k', async () => 1)
     expect(m.size).toBe(0)
@@ -916,22 +921,23 @@ describe('StoreMutex', () => {
 })
 ```
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [ ] **Step 2: run the tests and confirm they fail**
 
 Run: `bun test tests/unit/store-mutex.test.ts`
-Expected: FAIL —— 模块不存在
+Expected: FAIL - the module does not exist
 
-- [ ] **Step 3: 实现 `src/exec/store-mutex.ts`**
+- [ ] **Step 3: implement `src/exec/store-mutex.ts`**
 
 ```ts
 /**
- * 按 key 分键的进程内串行队列。
+ * An in-process serial queue, keyed.
  *
- * 只用于保护 store 级共享状态：git fetch（写 refs 与对象）与
- * git worktree add/remove（写 .git/worktrees）。worktree 内部的操作
- * 一律无锁 —— 见 spec §3.4。
+ * It exists only to protect store-level shared state: git fetch, which writes
+ * refs and objects, and git worktree add/remove, which writes .git/worktrees.
+ * Operations inside a worktree take no lock at all - see spec §3.4.
  *
- * 本包假设单进程独占 root 目录，因此不需要文件锁或分布式锁。
+ * This package assumes a single process owns the root directory, so no file
+ * lock or distributed lock is needed.
  */
 export class StoreMutex {
   #tails = new Map<string, Promise<unknown>>()
@@ -942,7 +948,7 @@ export class StoreMutex {
 
   run<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.#tails.get(key) ?? Promise.resolve()
-    // 无论前一个任务成功还是失败，都继续排队，避免队列卡死
+    // Queue on regardless of whether the previous task succeeded, so one failure cannot wedge the queue
     const result = prev.then(fn, fn)
     const tail = result.then(
       () => undefined,
@@ -956,7 +962,7 @@ export class StoreMutex {
 }
 ```
 
-- [ ] **Step 4: 运行测试，确认通过**
+- [ ] **Step 4: run the tests and confirm they pass**
 
 Run: `bun test tests/unit/store-mutex.test.ts`
 Expected: 5 tests PASS
@@ -970,7 +976,7 @@ git commit -m "feat: serialize store-level git operations per key"
 
 ---
 
-### Task 7: GitExecutor（唯一 spawn git 的地方）
+### Task 7: GitExecutor, the only place that spawns git
 
 **Files:**
 - Create: `src/exec/git-executor.ts`
@@ -983,9 +989,9 @@ git commit -m "feat: serialize store-level git operations per key"
   - `type ExecOptions = { cwd?: string; token?: string; timeout?: number; phase?: ProgressEvent['phase'] }`
   - `class GitExecutor { constructor(opts: { gitPath?: string; timeout?: number; onProgress?: (e: ProgressEvent) => void }); run(args: string[], opts?: ExecOptions): Promise<string>; version(): Promise<{ major: number; minor: number; patch: number; raw: string }> }`
 
-`run` 返回 stdout（已 trim）。失败时抛 `GitOpError`，`code` 由 `mapGitError` 决定，`detail` 与 `command` 均已脱敏。
+`run` returns trimmed stdout. On failure it throws a `GitOpError` whose `code` comes from `mapGitError`, with `detail` and `command` both scrubbed.
 
-- [ ] **Step 1: 写测试辅助（真 git 环境）**
+- [ ] **Step 1: write the test helpers, against real git**
 
 `tests/helpers/fixtures.ts`：
 
@@ -1018,8 +1024,9 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 /**
- * 造一个带内容的 bare 仓库当作 remote，返回其路径（可作为 clone url）。
- * 目录结构：docs/a.md、docs/api/b.md、src/index.ts、README.md
+ * Build a bare repository with content to act as the remote, returning a path
+ * usable as a clone url.
+ * Layout: docs/a.md, docs/api/b.md, src/index.ts, README.md
  */
 export function makeBareRemote(root: string): string {
   const bare = join(root, 'remote.git')
@@ -1044,7 +1051,7 @@ export function makeBareRemote(root: string): string {
   return bare
 }
 
-/** 在 remote 上追加一次提交，用于模拟"别人 push 了改动"。 */
+/** Add a commit on the remote, simulating "someone else pushed". */
 export function pushToRemote(
   root: string,
   bare: string,
@@ -1064,7 +1071,7 @@ export function pushToRemote(
 }
 ```
 
-- [ ] **Step 2: 写失败的 GitExecutor 测试**
+- [ ] **Step 2: write the failing GitExecutor tests**
 
 `tests/integration/git-executor.test.ts`：
 
@@ -1079,20 +1086,20 @@ beforeEach(() => { root = tempDir() })
 afterEach(() => { cleanup(root) })
 
 describe('GitExecutor', () => {
-  test('version 解析出版本号', async () => {
+  test('version parses the version number', async () => {
     const v = await new GitExecutor({}).version()
     expect(v.major).toBeGreaterThanOrEqual(2)
     expect(typeof v.raw).toBe('string')
   })
 
-  test('run 返回 trim 后的 stdout', async () => {
+  test('run returns trimmed stdout', async () => {
     const bare = makeBareRemote(root)
     const out = await new GitExecutor({}).run(['ls-remote', '--heads', bare])
     expect(out).toContain('refs/heads/main')
     expect(out).toBe(out.trim())
   })
 
-  test('失败时抛 GitOpError 且带映射后的 code', async () => {
+  test('a failure throws GitOpError with the mapped code', async () => {
     const exec = new GitExecutor({})
     try {
       await exec.run(['status'], { cwd: root })
@@ -1103,7 +1110,7 @@ describe('GitExecutor', () => {
     }
   })
 
-  test('错误信息与 command 中不含 token', async () => {
+  test('neither the message nor command contains the token', async () => {
     const exec = new GitExecutor({})
     const token = 'ghp_supersecrettoken'
     try {
@@ -1116,10 +1123,10 @@ describe('GitExecutor', () => {
     }
   })
 
-  test('超时抛 TIMEOUT', async () => {
+  test('a timeout throws TIMEOUT', async () => {
     const exec = new GitExecutor({ timeout: 1 })
     try {
-      // clone 一个不可达地址，必然超过 1ms
+      // Cloning an unreachable address is certain to take more than 1ms
       await exec.run(['clone', 'https://127.0.0.1:1/nope.git', `${root}/x`])
       throw new Error('should have thrown')
     } catch (e) {
@@ -1127,7 +1134,7 @@ describe('GitExecutor', () => {
     }
   })
 
-  test('onProgress 收到已脱敏的事件', async () => {
+  test('onProgress receives scrubbed events', async () => {
     const events: ProgressEvent[] = []
     const bare = makeBareRemote(root)
     const exec = new GitExecutor({ onProgress: (e) => events.push(e) })
@@ -1136,14 +1143,15 @@ describe('GitExecutor', () => {
     expect(events.every((e) => e.phase === 'clone')).toBe(true)
   })
 
-  test('注入 merge.conflictStyle=diff3', async () => {
+  test('injects merge.conflictStyle=diff3', async () => {
     const bare = makeBareRemote(root)
     const exec = new GitExecutor({})
     await exec.run(['clone', bare, `${root}/c`])
     const out = await exec.run(['config', '--get', 'merge.conflictStyle'], { cwd: `${root}/c` })
       .catch(() => '')
-    // 注入是通过 -c 而非写入 config，所以 config --get 读不到；
-    // 这里改为断言注入出现在传给 git 的参数中
+    // The injection happens through -c rather than by writing config, so
+    // config --get cannot see it; assert instead that it appears in the
+    // arguments handed to git
     expect(out).toBe('')
     const args = exec.buildArgs(['status'], {})
     expect(args).toContain('merge.conflictStyle=diff3')
@@ -1151,12 +1159,12 @@ describe('GitExecutor', () => {
 })
 ```
 
-- [ ] **Step 3: 运行测试，确认失败**
+- [ ] **Step 3: run the tests and confirm they fail**
 
 Run: `bun test tests/integration/git-executor.test.ts`
-Expected: FAIL —— 模块不存在
+Expected: FAIL - the module does not exist
 
-- [ ] **Step 4: 实现 `src/exec/git-executor.ts`**
+- [ ] **Step 4: implement `src/exec/git-executor.ts`**
 
 ```ts
 import { execFile } from 'node:child_process'
@@ -1176,10 +1184,12 @@ export type GitVersion = { major: number; minor: number; patch: number; raw: str
 const DEFAULT_TIMEOUT = 120_000
 
 /**
- * 唯一 spawn git 的地方。其他任何文件出现 child_process 均为实现错误。
+ * The only place that spawns git. child_process appearing in any other file is
+ * an implementation error.
  *
- * 认证通过 `-c http.extraheader` 单次注入，绝不写入 URL —— 后者会落入
- * .git/config 与 reflog 造成泄露。
+ * Credentials are injected per invocation through `-c http.extraheader` and
+ * never written into the URL, which would leak them into .git/config and the
+ * reflog.
  */
 export class GitExecutor {
   readonly #gitPath: string
@@ -1196,7 +1206,7 @@ export class GitExecutor {
     this.#onProgress = opts.onProgress
   }
 
-  /** 暴露出来仅为可测试性：构造实际传给 git 的完整参数列表。 */
+  /** Exposed only for testability: builds the full argument list handed to git. */
   buildArgs(args: readonly string[], opts: ExecOptions): string[] {
     const pre = ['-c', 'merge.conflictStyle=diff3', '-c', 'core.quotepath=false']
     if (opts.token) {
@@ -1269,7 +1279,7 @@ export class GitExecutor {
     const raw = await this.run(['--version'])
     const m = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(raw)
     if (!m) {
-      throw new GitOpError('UNKNOWN', `无法解析 git 版本: ${raw}`, { detail: raw })
+      throw new GitOpError('UNKNOWN', `cannot parse the git version: ${raw}`, { detail: raw })
     }
     return {
       major: Number(m[1]),
@@ -1281,12 +1291,12 @@ export class GitExecutor {
 }
 ```
 
-- [ ] **Step 5: 运行测试，确认通过**
+- [ ] **Step 5: run the tests and confirm they pass**
 
 Run: `bun test tests/integration/git-executor.test.ts`
 Expected: 7 tests PASS
 
-- [ ] **Step 6: 加一条守卫测试，防止别处 spawn git**
+- [ ] **Step 6: add a guard test so nothing else spawns git**
 
 `tests/unit/architecture.test.ts`：
 
@@ -1304,10 +1314,10 @@ function walk(dir: string, out: string[] = []): string[] {
   return out
 }
 
-describe('架构约束', () => {
+describe('architectural constraints', () => {
   const files = walk('src')
 
-  test('只有 git-executor.ts 可以 import child_process 或 simple-git', () => {
+  test('only git-executor.ts may import child_process or simple-git', () => {
     const offenders = files.filter(
       (f) =>
         !f.endsWith('git-executor.ts') &&
@@ -1316,7 +1326,7 @@ describe('架构约束', () => {
     expect(offenders).toEqual([])
   })
 
-  test('domain/ 下不得碰 IO', () => {
+  test('nothing under domain/ may touch IO', () => {
     const offenders = files
       .filter((f) => f.includes('/domain/'))
       .filter((f) =>
@@ -1327,10 +1337,10 @@ describe('架构约束', () => {
 })
 ```
 
-- [ ] **Step 7: 运行全部测试**
+- [ ] **Step 7: run the whole test suite**
 
 Run: `bun test && bun run typecheck`
-Expected: 全部 PASS
+Expected: everything PASSES
 
 - [ ] **Step 8: Commit**
 
@@ -1341,7 +1351,7 @@ git commit -m "feat: add git executor with auth injection, timeout and redaction
 
 ---
 
-### Task 8: RepoManager —— preflight、布局、clone 去重
+### Task 8: RepoManager - preflight, layout, clone dedup
 
 **Files:**
 - Create: `src/api/repo-manager.ts`
@@ -1355,9 +1365,9 @@ git commit -m "feat: add git executor with auth injection, timeout and redaction
   - `type StoreConfig = { url: string; auth?: { token: string }; depth?: number; filter?: string | false }`
   - `class RepoManager { constructor(cfg: ManagerConfig); store(cfg: StoreConfig): Promise<RepoStore>; evict(url: string): Promise<boolean>; gc(opts): Promise<GcReport> }`
 
-**本任务只交付到"store 目录被正确 clone 出来"**；`RepoStore` 的 session 能力在 Task 9。本任务先实现 `RepoStore` 的构造与 `fetch`。
+**This task delivers only as far as the store directory being cloned correctly.** `RepoStore`'s session support arrives in task 9; here only its constructor and `fetch` are implemented.
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: write the failing tests**
 
 `tests/integration/repo-manager.test.ts`：
 
@@ -1380,46 +1390,47 @@ beforeEach(() => {
 })
 afterEach(() => cleanup(root))
 
-// 本地路径不是 http url，planLayout 只接受 http(s)。
-// 集成测试用 file:// 形式的 url，并在 manager 里放行 file 协议见 Step 3 说明。
+// A local path is not an http url, and planLayout accepts only http(s).
+// The integration tests use a file:// url; letting the file protocol through
+// the manager is covered in step 3.
 const urlOf = (p: string) => `file://${p}`
 
 describe('RepoManager', () => {
-  test('首次调用 store() 执行 clone，目录落在预期布局', async () => {
+  test('the first store() call clones and lands in the expected layout', async () => {
     const m = new RepoManager({ root: repos })
     const store = await m.store({ url: urlOf(bare) })
     expect(existsSync(join(store.storeDir, '.git'))).toBe(true)
     expect(existsSync(store.worktreeRoot)).toBe(true)
   })
 
-  test('store 的工作区为空（--no-checkout）', async () => {
+  test('the store working tree is empty, thanks to --no-checkout', async () => {
     const m = new RepoManager({ root: repos })
     const store = await m.store({ url: urlOf(bare) })
     const entries = readdirSync(store.storeDir).filter((e) => e !== '.git')
     expect(entries).toEqual([])
   })
 
-  test('store 设置了 extensions.worktreeConfig', async () => {
+  test('the store sets extensions.worktreeConfig', async () => {
     const m = new RepoManager({ root: repos })
     const store = await m.store({ url: urlOf(bare) })
     expect(await store.configGet('extensions.worktreeConfig')).toBe('true')
   })
 
-  test('store 保留了 remote.origin.fetch refspec（证明未用 --bare）', async () => {
+  test('the store keeps the remote.origin.fetch refspec, proving --bare was not used', async () => {
     const m = new RepoManager({ root: repos })
     const store = await m.store({ url: urlOf(bare) })
     expect(await store.configGet('remote.origin.fetch'))
       .toBe('+refs/heads/*:refs/remotes/origin/*')
   })
 
-  test('第二次调用复用同一 store 实例，不重复 clone', async () => {
+  test('a second call reuses the same store instance instead of cloning again', async () => {
     const m = new RepoManager({ root: repos })
     const a = await m.store({ url: urlOf(bare) })
     const b = await m.store({ url: urlOf(bare) })
     expect(b).toBe(a)
   })
 
-  test('并发首次调用只 clone 一次', async () => {
+  test('concurrent first calls clone exactly once', async () => {
     const m = new RepoManager({ root: repos })
     const [a, b, c] = await Promise.all([
       m.store({ url: urlOf(bare) }),
@@ -1430,7 +1441,7 @@ describe('RepoManager', () => {
     expect(c).toBe(a)
   })
 
-  test('已存在的 store 目录被复用而非重新 clone', async () => {
+  test('an existing store directory is reused rather than re-cloned', async () => {
     const m1 = new RepoManager({ root: repos })
     const s1 = await m1.store({ url: urlOf(bare) })
     const m2 = new RepoManager({ root: repos })
@@ -1439,15 +1450,15 @@ describe('RepoManager', () => {
     expect(existsSync(join(s2.storeDir, '.git'))).toBe(true)
   })
 
-  test('git 版本过低时 preflight 抛 GIT_VERSION_TOO_OLD', async () => {
+  test('preflight throws GIT_VERSION_TOO_OLD when git is too old', async () => {
     const m = new RepoManager({ root: repos, gitPath: 'git' })
-    // 用一个伪造的 version 注入点：见实现中的 minGitVersion 可选参数
+    // Uses a fake version injection point - see the optional minGitVersion parameter in the implementation
     const low = new RepoManager({ root: repos, minGitVersion: { major: 99, minor: 0, patch: 0 } })
     await expect(low.store({ url: urlOf(bare) })).rejects.toThrow(GitOpError)
     void m
   })
 
-  test('gitPath 指向不存在的可执行文件时抛 GIT_NOT_FOUND', async () => {
+  test('a gitPath pointing at a missing executable throws GIT_NOT_FOUND', async () => {
     const m = new RepoManager({ root: repos, gitPath: '/nonexistent/git' })
     try {
       await m.store({ url: urlOf(bare) })
@@ -1457,7 +1468,7 @@ describe('RepoManager', () => {
     }
   })
 
-  test('evict 删除 store 目录', async () => {
+  test('evict removes the store directory', async () => {
     const m = new RepoManager({ root: repos })
     const s = await m.store({ url: urlOf(bare) })
     expect(await m.evict(urlOf(bare))).toBe(true)
@@ -1466,52 +1477,52 @@ describe('RepoManager', () => {
 })
 ```
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [ ] **Step 2: run the tests and confirm they fail**
 
 Run: `bun test tests/integration/repo-manager.test.ts`
-Expected: FAIL —— 模块不存在
+Expected: FAIL - the module does not exist
 
-- [ ] **Step 3: 放宽 `planLayout` 以支持 `file://`（仅测试用）**
+- [ ] **Step 3: relax `planLayout` to accept `file://`, for tests only**
 
-修改 `src/domain/layout-planner.ts` 的协议校验，并在 `tests/unit/layout-planner.test.ts` 补一条用例：
+Change the protocol validation in `src/domain/layout-planner.ts` and add one case to `tests/unit/layout-planner.test.ts`:
 
 ```ts
-// layout-planner.ts 中替换协议判断
+// Replace the protocol check in layout-planner.ts
 const ALLOWED_PROTOCOLS = new Set(['https:', 'http:', 'file:'])
 if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) {
-  throw new GitOpError('INVALID_ARGUMENT', `只支持 http(s)/file URL，收到: ${parsed.protocol}`)
+  throw new GitOpError('INVALID_ARGUMENT', `only http(s) and file URLs are supported, got: ${parsed.protocol}`)
 }
 ```
 
-对 `file:` URL，`hostname` 为空，用固定字符串 `local` 作为 host 段：
+For a `file:` URL the `hostname` is empty, so the fixed string `local` is used as the host segment:
 
 ```ts
 const rawHost = parsed.hostname || (parsed.protocol === 'file:' ? 'local' : '')
-if (!rawHost) throw new GitOpError('INVALID_ARGUMENT', `URL 缺少 host: ${url}`)
+if (!rawHost) throw new GitOpError('INVALID_ARGUMENT', `URL has no host: ${url}`)
 const host = parsed.port ? `${rawHost.toLowerCase()}_${parsed.port}` : rawHost.toLowerCase()
 ```
 
-`file://` 的 pathname 常常只有一段（如 `/tmp/xxx/remote.git`），因此把「至少两段」的校验放宽为 **http(s) 才要求两段**：
+A `file://` pathname often has a single segment, `/tmp/xxx/remote.git` for instance, so the "at least two segments" rule is relaxed to apply **only to http(s)**:
 
 ```ts
 if (parsed.protocol !== 'file:' && segments.length < 2) {
-  throw new GitOpError('INVALID_ARGUMENT', `URL 缺少 owner/repo: ${url}`)
+  throw new GitOpError('INVALID_ARGUMENT', `URL has no owner/repo: ${url}`)
 }
 if (segments.length === 0) {
-  throw new GitOpError('INVALID_ARGUMENT', `URL 缺少路径: ${url}`)
+  throw new GitOpError('INVALID_ARGUMENT', `URL has no path: ${url}`)
 }
 ```
 
-新增单测：
+A new unit test:
 
 ```ts
-test('file:// url 用于本地测试', () => {
+test('file:// urls, used by the local tests', () => {
   const l = planLayout('/r', 'file:///tmp/x/remote.git')
   expect(l.key).toBe('local/tmp/x/remote')
 })
 ```
 
-- [ ] **Step 4: 实现 `src/api/repo-manager.ts`**
+- [ ] **Step 4: implement `src/api/repo-manager.ts`**
 
 ```ts
 import { mkdir, rm } from 'node:fs/promises'
@@ -1529,7 +1540,7 @@ export type ManagerConfig = {
   gitPath?: string
   timeout?: number
   onProgress?: (e: ProgressEvent) => void
-  /** 仅供测试覆盖；生产环境不要传。 */
+  /** For tests to override; never pass this in production. */
   minGitVersion?: { major: number; minor: number; patch: number }
 }
 
@@ -1537,7 +1548,7 @@ export type StoreConfig = {
   url: string
   auth?: { token: string }
   depth?: number
-  /** partial clone filter，默认 'blob:none'；传 false 关闭。 */
+  /** Partial clone filter, 'blob:none' by default; pass false to disable. */
   filter?: string | false
 }
 
@@ -1574,7 +1585,7 @@ export class RepoManager {
       if (!ok) {
         throw new GitOpError(
           'GIT_VERSION_TOO_OLD',
-          `需要 git >= ${min.major}.${min.minor}，当前为 ${v.raw}`,
+          `git >= ${min.major}.${min.minor} is required, found ${v.raw}`,
           { detail: v.raw },
         )
       }
@@ -1582,7 +1593,7 @@ export class RepoManager {
     try {
       await this.#preflight
     } catch (e) {
-      this.#preflight = undefined  // 允许下次重试
+      this.#preflight = undefined  // Allow a retry next time
       throw e
     }
   }
@@ -1661,9 +1672,9 @@ export class RepoManager {
 }
 ```
 
-- [ ] **Step 5: 实现 `src/api/repo-store.ts` 的最小版本**
+- [ ] **Step 5: implement a minimal `src/api/repo-store.ts`**
 
-本步只实现构造、`configGet`、`fetch`、`pruneOrphans` 与计数字段；session 能力在 Task 9 补齐。
+This step implements the constructor, `configGet`, `fetch`, `pruneOrphans` and the counters only; session support follows in task 9.
 
 ```ts
 import { readdir, rm } from 'node:fs/promises'
@@ -1700,7 +1711,7 @@ export class RepoStore {
     return performance.timeOrigin + performance.now() - this.#lastUsed
   }
 
-  /** 仅供 RepoManager 与 session 生命周期使用。 */
+  /** For RepoManager and the session lifecycle only. */
   _retain(): void { this.#active += 1; this.#touch() }
   _release(): void { this.#active = Math.max(0, this.#active - 1); this.#touch() }
   #touch(): void { this.#lastUsed = performance.timeOrigin + performance.now() }
@@ -1709,7 +1720,7 @@ export class RepoStore {
     return this.#d.exec.run(['config', '--get', name], { cwd: this.storeDir })
   }
 
-  /** store 级：写 refs 与对象，必须串行。 */
+  /** Store level: writes refs and objects, so it has to be serialized. */
   async fetch(refspec?: string): Promise<void> {
     this.#touch()
     await this.#d.mutex.run(this.key, () =>
@@ -1720,7 +1731,7 @@ export class RepoStore {
     )
   }
 
-  /** 启动清理：回收进程被 kill 后残留的孤儿 worktree。 */
+  /** Startup cleanup: reclaim orphaned worktrees left behind by a killed process. */
   async pruneOrphans(): Promise<string[]> {
     return this.#d.mutex.run(this.key, async () => {
       await this.#d.exec.run(['worktree', 'prune'], { cwd: this.storeDir })
@@ -1750,7 +1761,7 @@ export class RepoStore {
 }
 ```
 
-- [ ] **Step 6: 更新 `src/index.ts`**
+- [ ] **Step 6: update `src/index.ts`**
 
 ```ts
 export * from './types'
@@ -1759,10 +1770,10 @@ export type { ManagerConfig, StoreConfig, GcReport } from './api/repo-manager'
 export { RepoStore } from './api/repo-store'
 ```
 
-- [ ] **Step 7: 运行测试**
+- [ ] **Step 7: run the tests**
 
 Run: `bun test && bun run typecheck`
-Expected: 全部 PASS（repo-manager 10 tests + 既有测试）
+Expected: everything PASSES - 10 repo-manager tests plus the existing ones
 
 - [ ] **Step 8: Commit**
 
@@ -1773,7 +1784,7 @@ git commit -m "feat: add repo manager with preflight, layout and clone dedup"
 
 ---
 
-### Task 9: worktree session —— 正确的 sparse 创建顺序
+### Task 9: worktree sessions - the correct sparse creation order
 
 **Files:**
 - Modify: `src/api/repo-store.ts`
@@ -1790,9 +1801,9 @@ git commit -m "feat: add repo manager with preflight, layout and clone dedup"
   - `RepoStore#listSessions(): Promise<SessionInfo[]>`
   - `class GitRepo { readonly dir: string; readonly branch: string; dispose(): Promise<void>; status(): Promise<StatusResult> }`
 
-**关键：worktree 创建顺序必须是 `add --no-checkout` → `sparse-checkout init --cone` → `sparse-checkout set` → `checkout`。** 顺序错了会在 partial clone 中触发全量 blob 拉取，"只下载指定目录"直接失效。
+**The critical part: the worktree creation order has to be `add --no-checkout`, `sparse-checkout init --cone`, `sparse-checkout set`, `checkout`.** Getting it wrong triggers a full blob fetch under a partial clone, and "download only the named directories" stops working entirely.
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: write the failing tests**
 
 `tests/integration/session.test.ts`：
 
@@ -1818,8 +1829,8 @@ afterEach(() => cleanup(root))
 
 const AUTHOR = { name: 'Bot', email: 'bot@example.com' }
 
-describe('session 生命周期', () => {
-  test('sparse 模式下只有指定目录落盘', async () => {
+describe('session lifecycle', () => {
+  test('in sparse mode only the named directories reach disk', async () => {
     const repo = await store.createSession({
       branch: 'feat/a', sparsePaths: ['docs'], author: AUTHOR,
     })
@@ -1828,13 +1839,13 @@ describe('session 生命周期', () => {
     await repo.dispose()
   })
 
-  test('全量模式下所有目录落盘', async () => {
+  test('in full mode every directory reaches disk', async () => {
     const repo = await store.createSession({ branch: 'feat/full', author: AUTHOR })
     expect(existsSync(join(repo.dir, 'src', 'index.ts'))).toBe(true)
     await repo.dispose()
   })
 
-  test('两个 session 的 sparse 配置互不污染', async () => {
+  test('two sessions sparse configurations do not contaminate each other', async () => {
     const a = await store.createSession({ branch: 'feat/a', sparsePaths: ['docs'], author: AUTHOR })
     const b = await store.createSession({ branch: 'feat/b', sparsePaths: ['src'], author: AUTHOR })
     expect(existsSync(join(a.dir, 'docs'))).toBe(true)
@@ -1844,9 +1855,10 @@ describe('session 生命周期', () => {
     await a.dispose(); await b.dispose()
   })
 
-  test('创建 worktree 期间不发生全量 blob 拉取', async () => {
-    // partial clone 下，未拉取的 blob 计为 promisor 缺失。
-    // 断言 sparse session 建立后，src/ 下的 blob 仍未被取回。
+  test('creating a worktree does not fetch every blob', async () => {
+    // Under a partial clone, an unfetched blob counts as promisor-missing.
+    // Assert that once the sparse session exists, the blobs under src/ are
+    // still not fetched.
     const repo = await store.createSession({
       branch: 'feat/a', sparsePaths: ['docs'], author: AUTHOR,
     })
@@ -1855,12 +1867,12 @@ describe('session 生命周期', () => {
       ['rev-list', '--objects', '--missing=print', 'HEAD'],
       { cwd: store.storeDir, encoding: 'utf8' },
     )
-    // 至少 src/index.ts 与 README.md 的 blob 应仍缺失（以 ? 开头）
+    // At minimum the blobs for src/index.ts and README.md should still be missing, marked with a leading ?
     expect(missing.split('\n').filter((l) => l.startsWith('?')).length).toBeGreaterThan(0)
     await repo.dispose()
   })
 
-  test('同一分支在两个 session 中 checkout → BRANCH_IN_USE', async () => {
+  test('checking one branch out in two sessions gives BRANCH_IN_USE', async () => {
     const a = await store.createSession({ branch: 'feat/dup', author: AUTHOR })
     try {
       await store.createSession({ branch: 'feat/dup', author: AUTHOR })
@@ -1872,7 +1884,7 @@ describe('session 生命周期', () => {
     }
   })
 
-  test("branchMode: 'create' 遇已存在分支 → BRANCH_EXISTS", async () => {
+  test("branchMode: 'create' on an existing branch gives BRANCH_EXISTS", async () => {
     const a = await store.createSession({ branch: 'feat/x', author: AUTHOR })
     await a.dispose()
     try {
@@ -1883,7 +1895,7 @@ describe('session 生命周期', () => {
     }
   })
 
-  test("branchMode: 'reuse' 遇不存在分支 → BRANCH_NOT_FOUND", async () => {
+  test("branchMode: 'reuse' on a missing branch gives BRANCH_NOT_FOUND", async () => {
     try {
       await store.createSession({ branch: 'feat/nope', branchMode: 'reuse', author: AUTHOR })
       throw new Error('should have thrown')
@@ -1892,7 +1904,7 @@ describe('session 生命周期', () => {
     }
   })
 
-  test("branchMode 默认 createOrReuse：不存在则建，存在则复用", async () => {
+  test("branchMode defaults to createOrReuse: create when missing, reuse when present", async () => {
     const a = await store.createSession({ branch: 'feat/r', author: AUTHOR })
     await a.dispose()
     const b = await store.createSession({ branch: 'feat/r', author: AUTHOR })
@@ -1900,7 +1912,7 @@ describe('session 生命周期', () => {
     await b.dispose()
   })
 
-  test('dispose 后目录被删除，且幂等', async () => {
+  test('dispose removes the directory and is idempotent', async () => {
     const repo = await store.createSession({ branch: 'feat/d', author: AUTHOR })
     const dir = repo.dir
     await repo.dispose()
@@ -1908,7 +1920,7 @@ describe('session 生命周期', () => {
     expect(existsSync(dir)).toBe(false)
   })
 
-  test('dispose 后调用方法抛 WORKTREE_DISPOSED', async () => {
+  test('calling a method after dispose throws WORKTREE_DISPOSED', async () => {
     const repo = await store.createSession({ branch: 'feat/d2', author: AUTHOR })
     await repo.dispose()
     try {
@@ -1919,7 +1931,7 @@ describe('session 生命周期', () => {
     }
   })
 
-  test('activeSessions 计数随创建与释放增减', async () => {
+  test('activeSessions rises and falls with creation and release', async () => {
     expect(store.activeSessions).toBe(0)
     const a = await store.createSession({ branch: 'feat/c1', author: AUTHOR })
     expect(store.activeSessions).toBe(1)
@@ -1927,7 +1939,7 @@ describe('session 生命周期', () => {
     expect(store.activeSessions).toBe(0)
   })
 
-  test('listSessions 报告存活 worktree 与状态', async () => {
+  test('listSessions reports the live worktrees and their state', async () => {
     const a = await store.createSession({ branch: 'feat/l', author: AUTHOR })
     const list = await store.listSessions()
     expect(list.map((s) => s.dir)).toContain(a.dir)
@@ -1935,7 +1947,7 @@ describe('session 生命周期', () => {
     await a.dispose()
   })
 
-  test('并发创建 10 个 session 全部成功且互不干扰', async () => {
+  test('ten sessions created concurrently all succeed without interfering', async () => {
     const repos = await Promise.all(
       Array.from({ length: 10 }, (_, i) =>
         store.createSession({ branch: `feat/p${i}`, sparsePaths: ['docs'], author: AUTHOR }),
@@ -1947,7 +1959,7 @@ describe('session 生命周期', () => {
     expect(store.activeSessions).toBe(0)
   })
 
-  test('attachSession 可重新接管已存在的 worktree', async () => {
+  test('attachSession can take an existing worktree back over', async () => {
     const a = await store.createSession({ branch: 'feat/at', author: AUTHOR })
     const dir = a.dir
     const b = await store.attachSession(dir)
@@ -1956,7 +1968,7 @@ describe('session 生命周期', () => {
     await b.dispose()
   })
 
-  test('pruneOrphans 回收无主目录', async () => {
+  test('pruneOrphans reclaims orphaned directories', async () => {
     const orphan = join(store.worktreeRoot, 'orphan-xyz')
     execFileSync('mkdir', ['-p', join(orphan, 'sub')])
     const removed = await store.pruneOrphans()
@@ -1966,12 +1978,12 @@ describe('session 生命周期', () => {
 })
 ```
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [ ] **Step 2: run the tests and confirm they fail**
 
 Run: `bun test tests/integration/session.test.ts`
-Expected: FAIL —— `createSession` 不存在
+Expected: FAIL - `createSession` does not exist
 
-- [ ] **Step 3: 实现 `src/api/git-repo.ts`**
+- [ ] **Step 3: implement `src/api/git-repo.ts`**
 
 ```ts
 import { GitOpError, type SparsePath } from '../types'
@@ -2008,10 +2020,10 @@ export class GitRepo {
   get branch(): string { return this.#d.branch }
   get sparsePaths(): readonly SparsePath[] { return this.#d.sparse }
 
-  /** 供 GitRepo 内部与同包其他 api 类使用。 */
+  /** For GitRepo itself and the other api classes in this package. */
   _assertLive(): void {
     if (this.#disposed) {
-      throw new GitOpError('WORKTREE_DISPOSED', `session 已释放: ${this.#d.dir}`)
+      throw new GitOpError('WORKTREE_DISPOSED', `session already released: ${this.#d.dir}`)
     }
   }
 
@@ -2056,12 +2068,12 @@ export class GitRepo {
 }
 ```
 
-- [ ] **Step 4: 在 `src/api/repo-store.ts` 中加入 session 能力**
+- [ ] **Step 4: add session support to `src/api/repo-store.ts`**
 
-在类中追加以下成员（保留 Task 8 已有内容）：
+Add the following members to the class, keeping what task 8 already put there:
 
 ```ts
-// 文件顶部追加 import
+// Additional imports at the top of the file
 import { randomBytes } from 'node:crypto'
 import { normalizeSparsePaths } from '../domain/sparse-manager'
 import { worktreeDirFor } from '../domain/layout-planner'
@@ -2084,7 +2096,7 @@ export type SessionInfo = {
 }
 ```
 
-类内新增方法：
+New methods on the class:
 
 ```ts
   async #defaultBase(): Promise<string> {
@@ -2130,18 +2142,19 @@ export type SessionInfo = {
 
     const created = await this.#d.mutex.run(this.key, async () => {
       if ((await this.#checkedOutBranches()).has(cfg.branch)) {
-        throw new GitOpError('BRANCH_IN_USE', `分支 ${cfg.branch} 已在另一个 worktree 中 checkout`)
+        throw new GitOpError('BRANCH_IN_USE', `branch ${cfg.branch} is already checked out in another worktree`)
       }
       const exists = await this.#branchExists(cfg.branch)
       if (mode === 'create' && exists) {
-        throw new GitOpError('BRANCH_EXISTS', `分支已存在: ${cfg.branch}`)
+        throw new GitOpError('BRANCH_EXISTS', `branch already exists: ${cfg.branch}`)
       }
       if (mode === 'reuse' && !exists) {
-        throw new GitOpError('BRANCH_NOT_FOUND', `分支不存在: ${cfg.branch}`)
+        throw new GitOpError('BRANCH_NOT_FOUND', `no such branch: ${cfg.branch}`)
       }
 
-      // 关键顺序：先建空 worktree，再配 sparse，最后才 checkout。
-      // 若先 checkout，partial clone 会向 promisor remote 批量拉取全部 blob。
+      // The order matters: create an empty worktree, configure sparse, and only
+      // then check out. Checking out first would make the partial clone fetch
+      // every blob from the promisor remote.
       const base = cfg.base ?? (await this.#defaultBase())
       const addArgs = ['worktree', 'add', '--no-checkout']
       if (exists) addArgs.push(dir, cfg.branch)
@@ -2248,7 +2261,7 @@ export type SessionInfo = {
   }
 ```
 
-- [ ] **Step 5: 更新 `src/index.ts`**
+- [ ] **Step 5: update `src/index.ts`**
 
 ```ts
 export * from './types'
@@ -2260,15 +2273,15 @@ export { GitRepo } from './api/git-repo'
 export type { StatusResult } from './api/git-repo'
 ```
 
-- [ ] **Step 6: 运行测试**
+- [ ] **Step 6: run the tests**
 
 Run: `bun test tests/integration/session.test.ts`
 Expected: 15 tests PASS
 
-- [ ] **Step 7: 运行全部测试与类型检查**
+- [ ] **Step 7: run the whole suite and the typecheck**
 
 Run: `bun test && bun run typecheck`
-Expected: 全部 PASS
+Expected: everything PASSES
 
 - [ ] **Step 8: Commit**
 
@@ -2279,7 +2292,7 @@ git commit -m "feat: create sparse worktree sessions with correct checkout order
 
 ---
 
-### Task 10: FsGateway —— 受约束的文件读写
+### Task 10: FsGateway - constrained file reads and writes
 
 **Files:**
 - Create: `src/exec/fs-gateway.ts`
@@ -2292,7 +2305,7 @@ git commit -m "feat: create sparse worktree sessions with correct checkout order
   - `class FsGateway { constructor(dir: string, sparse: readonly SparsePath[]); readFile(rel): Promise<string>; writeFile(rel, content): Promise<void>; listFiles(rel?): Promise<string[]>; exists(rel): Promise<boolean> }`
   - `GitRepo#readFile / writeFile / listFiles / exists`
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: write the failing tests**
 
 `tests/integration/fs-gateway.test.ts`：
 
@@ -2321,38 +2334,38 @@ function codeOf(p: Promise<unknown>): Promise<string> {
   return p.then(() => 'NO_THROW', (e: GitOpError) => e.code)
 }
 
-describe('FsGateway 经由 GitRepo', () => {
-  test('读取 sparse 范围内的文件', async () => {
+describe('FsGateway through GitRepo', () => {
+  test('reads a file inside the sparse range', async () => {
     expect(await repo.readFile('docs/a.md')).toBe('# a\n')
   })
 
-  test('写入并读回', async () => {
+  test('writes and reads back', async () => {
     await repo.writeFile('docs/new.md', 'hello')
     expect(await repo.readFile('docs/new.md')).toBe('hello')
   })
 
-  test('写入时自动创建中间目录', async () => {
+  test('creates intermediate directories on write', async () => {
     await repo.writeFile('docs/deep/nested/x.md', 'x')
     expect(await repo.readFile('docs/deep/nested/x.md')).toBe('x')
   })
 
-  test('读取 sparse 范围外的文件 → PATH_OUTSIDE_SPARSE', async () => {
+  test('reading a file outside the sparse range gives PATH_OUTSIDE_SPARSE', async () => {
     expect(await codeOf(repo.readFile('src/index.ts'))).toBe('PATH_OUTSIDE_SPARSE')
   })
 
-  test('写入 sparse 范围外 → PATH_OUTSIDE_SPARSE', async () => {
+  test('writing outside the sparse range gives PATH_OUTSIDE_SPARSE', async () => {
     expect(await codeOf(repo.writeFile('src/x.ts', 'x'))).toBe('PATH_OUTSIDE_SPARSE')
   })
 
-  test('穿越路径 → PATH_TRAVERSAL', async () => {
+  test('a traversal path gives PATH_TRAVERSAL', async () => {
     expect(await codeOf(repo.writeFile('../escape.md', 'x'))).toBe('PATH_TRAVERSAL')
   })
 
-  test('写入 .git 下 → PATH_TRAVERSAL', async () => {
+  test('writing under .git gives PATH_TRAVERSAL', async () => {
     expect(await codeOf(repo.writeFile('.git/hooks/evil', 'x'))).toBe('PATH_TRAVERSAL')
   })
 
-  test('经由符号链接逃逸 → PATH_TRAVERSAL', async () => {
+  test('escaping through a symlink gives PATH_TRAVERSAL', async () => {
     const outside = join(root, 'outside')
     mkdirSync(outside, { recursive: true })
     writeFileSync(join(outside, 'secret.txt'), 'secret')
@@ -2360,7 +2373,7 @@ describe('FsGateway 经由 GitRepo', () => {
     expect(await codeOf(repo.readFile('docs/link/secret.txt'))).toBe('PATH_TRAVERSAL')
   })
 
-  test('listFiles 只列出 sparse 范围内的文件，且不含 .git', async () => {
+  test('listFiles lists only files inside the sparse range, and never .git', async () => {
     const files = await repo.listFiles()
     expect(files).toContain('docs/a.md')
     expect(files).toContain('docs/api/b.md')
@@ -2368,28 +2381,28 @@ describe('FsGateway 经由 GitRepo', () => {
     expect(files.some((f) => f.startsWith('src/'))).toBe(false)
   })
 
-  test('listFiles 可限定子目录', async () => {
+  test('listFiles can be limited to a subdirectory', async () => {
     expect(await repo.listFiles('docs/api')).toEqual(['docs/api/b.md'])
   })
 
-  test('exists 对存在与不存在分别返回 true/false', async () => {
+  test('exists returns true or false as appropriate', async () => {
     expect(await repo.exists('docs/a.md')).toBe(true)
     expect(await repo.exists('docs/nope.md')).toBe(false)
   })
 
-  test('dispose 后文件操作抛 WORKTREE_DISPOSED', async () => {
+  test('file operations after dispose throw WORKTREE_DISPOSED', async () => {
     await repo.dispose()
     expect(await codeOf(repo.readFile('docs/a.md'))).toBe('WORKTREE_DISPOSED')
   })
 })
 ```
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [ ] **Step 2: run the tests and confirm they fail**
 
 Run: `bun test tests/integration/fs-gateway.test.ts`
-Expected: FAIL —— `repo.readFile` 不存在
+Expected: FAIL - `repo.readFile` does not exist
 
-- [ ] **Step 3: 实现 `src/exec/fs-gateway.ts`**
+- [ ] **Step 3: implement `src/exec/fs-gateway.ts`**
 
 ```ts
 import { lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises'
@@ -2398,10 +2411,11 @@ import { resolveWithin } from '../domain/path-guard'
 import { GitOpError, type SparsePath } from '../types'
 
 /**
- * 受 PathGuard 约束的文件访问。
+ * File access constrained by PathGuard.
  *
- * PathGuard 是纯函数、无法解析符号链接；本类在真正访问前额外用 realpath
- * 确认目标仍位于 worktree 内，堵住"经符号链接逃逸"这条路。
+ * PathGuard is a pure function and cannot resolve symlinks, so this class
+ * re-checks with realpath that the target is still inside the worktree,
+ * closing the "escape through a symlink" route.
  */
 export class FsGateway {
   constructor(
@@ -2417,12 +2431,12 @@ export class FsGateway {
       real = await realpath(probe)
     } catch (e) {
       if (mustExist) throw e
-      return abs  // 父目录尚不存在，稍后会 mkdir 创建，路径已由 PathGuard 校验
+      return abs  // The parent does not exist yet; mkdir creates it later, and PathGuard already validated the path
     }
     const rootReal = await realpath(this.dir)
     const rel2 = relative(rootReal, real)
     if (rel2.startsWith('..') || resolve(rootReal, rel2) !== real) {
-      throw new GitOpError('PATH_TRAVERSAL', `路径经符号链接逃出 worktree: ${rel}`)
+      throw new GitOpError('PATH_TRAVERSAL', `path escapes the worktree through a symlink: ${rel}`)
     }
     return abs
   }
@@ -2448,7 +2462,7 @@ export class FsGateway {
     }
   }
 
-  /** 递归列出相对路径；跳过 .git 与 sparse 范围外的内容。 */
+  /** Recursively list relative paths, skipping .git and anything outside the sparse range. */
   async listFiles(rel?: string): Promise<string[]> {
     const roots = rel
       ? [rel]
@@ -2482,18 +2496,18 @@ export class FsGateway {
 }
 ```
 
-- [ ] **Step 4: 在 `GitRepo` 上暴露文件方法**
+- [ ] **Step 4: expose the file methods on `GitRepo`**
 
-`src/api/git-repo.ts` 中追加：
+Append to `src/api/git-repo.ts`:
 
 ```ts
-// 顶部 import
+// Imports at the top
 import { FsGateway } from '../exec/fs-gateway'
 
-// 类内新增字段与方法
+// New fields and methods on the class
   readonly #fs: FsGateway
 
-  // 在 constructor 末尾追加：
+  // Append at the end of the constructor:
   //   this.#fs = new FsGateway(deps.dir, deps.sparse)
 
   async readFile(rel: string): Promise<string> {
@@ -2517,7 +2531,7 @@ import { FsGateway } from '../exec/fs-gateway'
   }
 ```
 
-- [ ] **Step 5: 运行测试**
+- [ ] **Step 5: run the tests**
 
 Run: `bun test tests/integration/fs-gateway.test.ts && bun run typecheck`
 Expected: 12 tests PASS
@@ -2531,7 +2545,7 @@ git commit -m "feat: add sparse-scoped file gateway with symlink escape guard"
 
 ---
 
-### Task 11: commit / fetch+merge 拆分的 pull / 基础 push
+### Task 11: commit, a pull split into fetch plus merge, and a basic push
 
 **Files:**
 - Modify: `src/api/git-repo.ts`
@@ -2548,9 +2562,9 @@ git commit -m "feat: add sparse-scoped file gateway with symlink escape guard"
   - `GitRepo#diffSummary(opts?: { against?: string }): Promise<string[]>`
   - `RepoStore#listBranches(): Promise<string[]>` / `RepoStore#deleteBranch(name: string): Promise<void>`
 
-**注意：`pull` 必须拆成 store 级 `fetch`（走 mutex）+ worktree 级 merge（无锁）**，否则违反"`GitRepo` 永不加锁"的约束。本任务的 `pushBranch` 是**不含重试**的基础版本；重试与冲突状态机在计划 2/3 实现。
+**Note: `pull` has to be split into a store-level `fetch`, which takes the mutex, plus a worktree-level merge, which does not**, or it violates the "`GitRepo` never locks" constraint. The `pushBranch` in this task is the basic version **without retries**; retries and the conflict state machine arrive in plans 2 and 3.
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: write the failing tests**
 
 `tests/integration/basic-ops.test.ts`：
 
@@ -2575,8 +2589,8 @@ beforeEach(async () => {
 })
 afterEach(async () => { await repo.dispose().catch(() => {}); cleanup(root) })
 
-describe('基础操作', () => {
-  test('commit 产出 sha，作者信息正确', async () => {
+describe('basic operations', () => {
+  test('commit produces a sha with the right author', async () => {
     await repo.writeFile('docs/new.md', 'hi')
     const r = await repo.commit({ message: 'add new doc' })
     expect(r.changed).toBe(true)
@@ -2586,12 +2600,12 @@ describe('基础操作', () => {
     expect(author).toBe('Bot <bot@example.com>')
   })
 
-  test('无改动时 commit 返回 changed: false 且不报错', async () => {
+  test('commit with nothing changed returns changed: false without failing', async () => {
     const r = await repo.commit({ message: 'nothing' })
     expect(r.changed).toBe(false)
   })
 
-  test('commit 指定 paths 只提交这些文件', async () => {
+  test('commit with paths commits only those files', async () => {
     await repo.writeFile('docs/a1.md', '1')
     await repo.writeFile('docs/a2.md', '2')
     await repo.commit({ message: 'only a1', paths: ['docs/a1.md'] })
@@ -2599,12 +2613,12 @@ describe('基础操作', () => {
     expect(st.untracked).toContain('docs/a2.md')
   })
 
-  test('commit 的 paths 越出 sparse 范围时抛错', async () => {
+  test('commit throws when its paths leave the sparse range', async () => {
     await repo.writeFile('docs/x.md', 'x')
     await expect(repo.commit({ message: 'm', paths: ['src/index.ts'] })).rejects.toThrow()
   })
 
-  test('pushBranch 成功后远端出现该分支', async () => {
+  test('after a successful pushBranch the remote has the branch', async () => {
     await repo.writeFile('docs/p.md', 'p')
     await repo.commit({ message: 'push me' })
     const r = await repo.pushBranch()
@@ -2613,12 +2627,12 @@ describe('基础操作', () => {
     expect(refs).toContain('refs/heads/feat/ops')
   })
 
-  test('远端分支被他人推进后再 push 返回 rejected', async () => {
+  test('pushing after someone else moved the remote branch returns rejected', async () => {
     await repo.writeFile('docs/p.md', 'v1')
     await repo.commit({ message: 'v1' })
     expect((await repo.pushBranch()).ok).toBe(true)
 
-    // 模拟他人在同一分支上再推一次
+    // Simulate someone else pushing to the same branch again
     const other = join(root, 'other')
     execFileSync('git', ['clone', '-b', 'feat/ops', bare, other])
     execFileSync('bash', ['-c', `echo v2 > ${other}/docs/p.md`])
@@ -2633,14 +2647,14 @@ describe('基础操作', () => {
     if (!r.ok) expect(r.reason).toBe('rejected')
   })
 
-  test('pull 无冲突时把远端改动合进来', async () => {
+  test('a pull without conflicts merges the remote changes in', async () => {
     pushToRemote(root, bare, { 'docs/ext.md': 'from other' })
     const r = await repo.pull({ ref: 'origin/main' })
     expect(r.conflicted).toBe(false)
     expect(await repo.readFile('docs/ext.md')).toBe('from other')
   })
 
-  test('pull 冲突时返回 conflicted: true 而不抛错', async () => {
+  test('a conflicting pull returns conflicted: true rather than throwing', async () => {
     await repo.writeFile('docs/a.md', '# mine\n')
     await repo.commit({ message: 'mine' })
     pushToRemote(root, bare, { 'docs/a.md': '# theirs\n' })
@@ -2649,7 +2663,7 @@ describe('基础操作', () => {
     expect((await repo.status()).conflicted).toContain('docs/a.md')
   })
 
-  test('log 返回提交列表', async () => {
+  test('log returns the commit list', async () => {
     await repo.writeFile('docs/l.md', 'l')
     await repo.commit({ message: 'log entry' })
     const entries = await repo.log({ limit: 1 })
@@ -2657,19 +2671,19 @@ describe('基础操作', () => {
     expect(entries[0]!.sha).toMatch(/^[0-9a-f]{40}$/)
   })
 
-  test('diffSummary 用 --name-only，返回改动文件名', async () => {
+  test('diffSummary uses --name-only and returns the changed file names', async () => {
     await repo.writeFile('docs/d.md', 'd')
     await repo.commit({ message: 'd' })
     const files = await repo.diffSummary({ against: 'origin/main' })
     expect(files).toContain('docs/d.md')
   })
 
-  test('listBranches 列出本地与远端分支', async () => {
+  test('listBranches lists local and remote branches', async () => {
     const branches = await store.listBranches()
     expect(branches).toContain('main')
   })
 
-  test('deleteBranch 删除未被 checkout 的分支', async () => {
+  test('deleteBranch removes a branch that is not checked out', async () => {
     const tmp = await store.createSession({ branch: 'feat/tmp', author: AUTHOR })
     await tmp.dispose()
     await store.deleteBranch('feat/tmp')
@@ -2678,27 +2692,27 @@ describe('基础操作', () => {
 })
 ```
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [ ] **Step 2: run the tests and confirm they fail**
 
 Run: `bun test tests/integration/basic-ops.test.ts`
-Expected: FAIL —— `repo.commit` 不存在
+Expected: FAIL - `repo.commit` does not exist
 
-- [ ] **Step 3: 在 `GitRepo` 上实现操作方法**
+- [ ] **Step 3: implement the operations on `GitRepo`**
 
-`src/api/git-repo.ts` 追加：
+Append to `src/api/git-repo.ts`:
 
 ```ts
-// 顶部 import 追加
+// Additional imports at the top of the file
 import { resolveWithin } from '../domain/path-guard'
 
 export type LogEntry = { sha: string; author: string; date: string; message: string }
 
-// GitRepo 类内追加：
+// Append inside the GitRepo class:
 
   async commit(opts: { message: string; paths?: string[] }): Promise<{ sha: string; changed: boolean }> {
     this._assertLive()
     if (opts.paths) {
-      // 越界路径必须在触碰 git 之前拒绝
+      // An out-of-range path has to be refused before git is touched
       for (const p of opts.paths) resolveWithin(this.#d.dir, p, this.#d.sparse)
       await this._git(['add', '--', ...opts.paths])
     } else {
@@ -2729,8 +2743,9 @@ export type LogEntry = { sha: string; author: string; date: string; message: str
   }
 
   /**
-   * pull = store 级 fetch（由调用方持锁）+ worktree 级 merge（无锁）。
-   * 冲突不抛错，返回 conflicted: true，冲突详情由计划 2 的 getConflicts 提供。
+   * pull is a store-level fetch, with the caller holding the lock, plus a
+   * worktree-level merge, unlocked. Conflicts do not throw; they come back as
+   * conflicted: true, with the details supplied by getConflicts in plan 2.
    */
   async pull(opts: { strategy?: 'merge' | 'rebase'; ref?: string } = {}): Promise<{ conflicted: boolean }> {
     this._assertLive()
@@ -2782,7 +2797,7 @@ export type LogEntry = { sha: string; author: string; date: string; message: str
     })
   }
 
-  /** 只用 --name-only：partial clone 下需要内容的 diff 会触发惰性拉取 blob。 */
+  /** --name-only only: under a partial clone, a diff that needs content triggers lazy blob fetching. */
   async diffSummary(opts: { against?: string } = {}): Promise<string[]> {
     const target = opts.against ?? 'HEAD~1'
     const out = await this._git(['diff', '--name-only', `${target}...HEAD`])
@@ -2790,9 +2805,9 @@ export type LogEntry = { sha: string; author: string; date: string; message: str
   }
 ```
 
-同时在 `GitRepoDeps` 中加入 `fetch: () => Promise<void>`，并在 `RepoStore#createSession` / `attachSession` 构造 `GitRepo` 时传入 `fetch: () => this.fetch()`。
+Also add `fetch: () => Promise<void>` to `GitRepoDeps`, and pass `fetch: () => this.fetch()` when `RepoStore#createSession` and `attachSession` construct a `GitRepo`.
 
-- [ ] **Step 4: 在 `RepoStore` 上实现分支方法**
+- [ ] **Step 4: implement the branch methods on `RepoStore`**
 
 ```ts
   async listBranches(): Promise<string[]> {
@@ -2812,15 +2827,15 @@ export type LogEntry = { sha: string; author: string; date: string; message: str
   }
 ```
 
-- [ ] **Step 5: 运行测试**
+- [ ] **Step 5: run the tests**
 
 Run: `bun test tests/integration/basic-ops.test.ts`
 Expected: 12 tests PASS
 
-- [ ] **Step 6: 运行全部测试、类型检查与构建**
+- [ ] **Step 6: run the whole suite, the typecheck and the build**
 
 Run: `bun test && bun run typecheck && bun run build`
-Expected: 全部 PASS，`dist/` 下产出 `index.js`、`index.cjs`、`index.d.ts`
+Expected: everything PASSES, and `dist/` holds `index.js`, `index.cjs` and `index.d.ts`
 
 - [ ] **Step 7: Commit**
 
@@ -2831,9 +2846,9 @@ git commit -m "feat: add commit, pull, push and branch operations"
 
 ---
 
-## 计划 1 完成标准
+## Definition of done for plan 1
 
-跑通以下端到端场景即视为本计划交付完成：
+This plan is delivered once the following end-to-end scenario runs:
 
 ```ts
 const manager = new RepoManager({ root: '/data/repos', auth: { token } })
@@ -2849,4 +2864,4 @@ const r = await repo.pushBranch()
 await repo.dispose()
 ```
 
-**尚未实现（由后续计划交付）：** 结构化冲突（计划 2）、push 被拒后自动 pull 重试（计划 2）、`withSession` / `publish`（计划 2）、GitHub PR 与 merge 模式（计划 3）、CI 矩阵与发布配置（计划 3）。
+**Not yet implemented, delivered by later plans:** structured conflicts (plan 2), the automatic pull and retry after a rejected push (plan 2), `withSession` and `publish` (plan 2), GitHub pull requests and merge modes (plan 3), the CI matrix and release configuration (plan 3).

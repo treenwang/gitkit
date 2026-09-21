@@ -1,14 +1,16 @@
-import type { GitRepo } from '@aaxis/gitkit'
-import { OP_NAMES, type OpName } from '@aaxis/gitkit-client'
+import type { GitRepo } from '@treenwang/gitkit'
+import { OP_NAMES, type OpName } from '@treenwang/gitkit-client'
 import { TransportError, toWireError } from './errors'
 import { OPS, type OpContext } from './ops'
 
 /**
- * 安全边界。
+ * The security boundary.
  *
- * 协议中不存在 url / root / worktreeDir / token —— 浏览器只发送一个不透明的
- * sessionId，由宿主在此解析并完成鉴权与租户隔离。返回 null 即 404
- * （不区分「不存在」与「无权限」，避免泄露 session 是否存在）。
+ * The protocol has no url, root, worktreeDir or token. The browser sends an
+ * opaque sessionId and nothing else; the host resolves it here and does its own
+ * authentication and tenant isolation. Returning null means 404 - deliberately
+ * not distinguishing "does not exist" from "not allowed", so the existence of a
+ * session never leaks.
  */
 export type ResolveSession = (
   req: Request,
@@ -17,17 +19,18 @@ export type ResolveSession = (
 
 export type HandlerConfig = {
   resolveSession: ResolveSession
-  /** 开放的 op 白名单。未列出的一律 404，不暴露其存在。默认全开。 */
+  /** Allowed ops. Anything unlisted answers 404 rather than revealing that it exists. All ops by default. */
   allow?: readonly OpName[]
-  /** 逐请求的细粒度判断，在 allow 之后执行。 */
+  /** A fine-grained per-request decision, applied after allow. */
   can?: (req: Request, op: OpName) => boolean | Promise<boolean>
-  /** 按 sessionId 串行化，防止并发写撞 index.lock。默认 true。 */
+  /** Serialize per sessionId, so concurrent writes cannot collide on index.lock. True by default. */
   serialize?: boolean
-  /** 单次响应中内容字段的字节上限。默认 1 MB。 */
+  /** Byte ceiling for content fields in a single response. 1 MB by default. */
   maxContentBytes?: number
   /**
-   * 是否把 GitOpError.detail 发给浏览器。detail 含服务端文件系统绝对路径，
-   * 默认 false，仅供内部工具开启。
+   * Whether to send GitOpError.detail to the browser. detail holds absolute
+   * server paths, so this is false by default and meant for internal tools
+   * only.
    */
   exposeDetail?: boolean
 }
@@ -58,27 +61,27 @@ export function createHandler(cfg: HandlerConfig): (req: Request) => Promise<Res
   return async function handle(req: Request): Promise<Response> {
     try {
       if (req.method !== 'POST') {
-        throw new TransportError('OP_NOT_ALLOWED', '只接受 POST')
+        throw new TransportError('OP_NOT_ALLOWED', 'only POST is accepted')
       }
 
       const op = new URL(req.url).pathname.split('/').filter(Boolean).pop() ?? ''
       if (!allowed.has(op as OpName) || !(op in OPS)) {
-        throw new TransportError('OP_NOT_ALLOWED', `未开放的操作: ${op}`)
+        throw new TransportError('OP_NOT_ALLOWED', `operation not available: ${op}`)
       }
       if (cfg.can && !(await cfg.can(req, op as OpName))) {
-        throw new TransportError('OP_NOT_ALLOWED', `未开放的操作: ${op}`)
+        throw new TransportError('OP_NOT_ALLOWED', `operation not available: ${op}`)
       }
 
       const body = await readJson(req)
       const sessionId = body.sessionId
       if (typeof sessionId !== 'string' || !sessionId) {
-        throw new TransportError('INVALID_ARGUMENT', '缺少 sessionId')
+        throw new TransportError('INVALID_ARGUMENT', 'sessionId is missing')
       }
 
       const run = async (): Promise<Response> => {
         const repo = await cfg.resolveSession(req, sessionId)
         if (!repo) {
-          throw new TransportError('SESSION_NOT_FOUND', 'session 不存在或无权访问')
+          throw new TransportError('SESSION_NOT_FOUND', 'no such session, or access is not allowed')
         }
         const ctx: OpContext = { repo, maxContentBytes }
         const impl = OPS[op as OpName] as (c: OpContext, p: unknown) => Promise<unknown>
@@ -100,7 +103,7 @@ async function readJson(req: Request): Promise<Record<string, unknown>> {
   try {
     text = await req.text()
   } catch {
-    throw new TransportError('INVALID_ARGUMENT', '无法读取请求体')
+    throw new TransportError('INVALID_ARGUMENT', 'the request body could not be read')
   }
   if (!text) return {}
   try {
@@ -110,6 +113,6 @@ async function readJson(req: Request): Promise<Record<string, unknown>> {
     }
     return parsed as Record<string, unknown>
   } catch {
-    throw new TransportError('INVALID_ARGUMENT', '请求体不是合法的 JSON 对象')
+    throw new TransportError('INVALID_ARGUMENT', 'the request body is not a valid JSON object')
   }
 }

@@ -2,8 +2,9 @@ import { GitOpError, type AutoMergeOutcome, type MergeMethod, type PullRequest }
 import type { CreatePRInput, ForgeProvider, ListPRQuery } from './types'
 
 /**
- * octokit 的最小结构化接口。只依赖 request/graphql 这两个最底层方法，
- * 既减少耦合，也让测试用的 fake 能忠实还原真实行为。
+ * The minimal structural interface over octokit. It depends only on request
+ * and graphql, the two lowest-level methods, which keeps coupling down and lets
+ * the test fake reproduce real behaviour faithfully.
  */
 export interface OctokitLike {
   request(
@@ -14,30 +15,30 @@ export interface OctokitLike {
 }
 
 export type GitHubProviderConfig = {
-  /** 仓库 URL，用于推导 owner/repo。 */
+  /** Repository URL, used to derive owner/repo. */
   url: string
   token: string
-  /** GitHub Enterprise 的 API 根地址，如 https://ghe.corp.io/api/v3 */
+  /** API root for GitHub Enterprise, e.g. https://ghe.corp.io/api/v3 */
   baseUrl?: string
-  /** 注入现成的 octokit 实例；省略则在首次调用时动态 import @octokit/rest。 */
+  /** Inject a ready-made octokit instance; omitted, @octokit/rest is imported dynamically on first use. */
   octokit?: OctokitLike
 }
 
 export type RepoSlug = { owner: string; repo: string }
 
-/** 从仓库 URL 推导 owner/repo。纯函数。 */
+/** Derive owner/repo from a repository URL. Pure function. */
 export function parseRepoSlug(url: string): RepoSlug {
   let parsed: URL
   try {
     parsed = new URL(url)
   } catch {
-    throw new GitOpError('INVALID_ARGUMENT', `无法解析仓库 URL: ${url}`)
+    throw new GitOpError('INVALID_ARGUMENT', `cannot parse the repository URL: ${url}`)
   }
   const segs = parsed.pathname.replace(/\.git$/i, '').split('/').filter(Boolean)
   if (segs.length < 2) {
-    throw new GitOpError('INVALID_ARGUMENT', `URL 中缺少 owner/repo: ${url}`)
+    throw new GitOpError('INVALID_ARGUMENT', `URL has no owner/repo: ${url}`)
   }
-  // GHE 可能带路径前缀，owner/repo 永远是最后两段
+  // GHE may add a path prefix; owner/repo are always the last two segments
   return { owner: segs[segs.length - 2]!, repo: segs[segs.length - 1]! }
 }
 
@@ -87,8 +88,9 @@ export class GitHubProvider implements ForgeProvider {
   async #octokit(): Promise<OctokitLike> {
     if (this.#cfg.octokit) return this.#cfg.octokit
     this.#client ??= (async () => {
-      // 用变量形式的说明符：@octokit/rest 是 optional peerDependency，
-      // 未安装时不应让类型检查或打包失败，只在实际调用 PR 功能时才报错。
+      // A variable specifier on purpose: @octokit/rest is an optional
+      // peerDependency, so its absence must not break typechecking or bundling.
+      // It should only fail when pull request features are actually used.
       const spec = '@octokit/rest'
       let mod: { Octokit: new (o: Record<string, unknown>) => OctokitLike }
       try {
@@ -96,8 +98,8 @@ export class GitHubProvider implements ForgeProvider {
       } catch (cause) {
         throw new GitOpError(
           'FORGE_NOT_INSTALLED',
-          'PR 功能需要 @octokit/rest。请安装它，或改用 octokit 注入。' +
-            '（核心 git 功能不受影响）',
+          'Pull request support needs @octokit/rest. Install it, or inject an ' +
+            'octokit instance instead. (Core git features are unaffected.)',
           { cause },
         )
       }
@@ -154,7 +156,7 @@ export class GitHubProvider implements ForgeProvider {
     return toPullRequest(data as RawPR)
   }
 
-  /** 立即合并。分支保护未满足时 GitHub 返回 405，映射成结构化结果而非抛错。 */
+  /** Merge right away. When branch protection is unsatisfied GitHub answers 405, which is mapped to a structured result rather than thrown. */
   async mergePR(number: number, method: MergeMethod): Promise<AutoMergeOutcome> {
     const octokit = await this.#octokit()
     try {
@@ -175,8 +177,9 @@ export class GitHubProvider implements ForgeProvider {
   }
 
   /**
-   * 启用 GitHub 原生 auto-merge：不立即合，等必需检查与 review 满足后由
-   * GitHub 自己合。前提是仓库设置里开了 "Allow auto-merge"。
+   * Turn on GitHub's native auto-merge: do not merge now, let GitHub merge once
+   * the required checks and reviews are satisfied. This needs "Allow auto-merge"
+   * enabled in the repository settings.
    */
   async enableAutoMerge(number: number, method: MergeMethod): Promise<AutoMergeOutcome> {
     const octokit = await this.#octokit()

@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Same as packages/server: the web-standard Request/Response types come from DOM
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"]
+  },
+  "include": ["server.ts"]
+}

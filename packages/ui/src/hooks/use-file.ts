@@ -1,25 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { GitkitClientError } from '@aaxis/gitkit-client'
+import { GitkitClientError } from '@treenwang/gitkit-client'
 import { useGitkit } from '../context'
 import { gitkitKeys } from '../keys'
 
 export type SaveState = 'clean' | 'dirty' | 'saving' | 'saved' | 'error'
 
 export type StaleConflict = {
-  /** 服务端当前内容 —— 别处（另一个标签页、一次 pull）产生的改动。 */
+  /** What the server currently holds - a change made elsewhere, in another tab or by a pull. */
   serverContent: string
   serverEtag: string
-  /** 用户本地未能保存的内容。 */
+  /** The local content that could not be saved. */
   localContent: string
 }
 
 export type UseFileOptions = {
-  /** 停止输入后多久保存。默认 800ms。 */
+  /** How long after typing stops to save. 800ms by default. */
   debounceMs?: number
-  /** 连续输入时至少多久强制保存一次。默认 5000ms。 */
+  /** How often to force a save while typing continues. 5000ms by default. */
   maxWaitMs?: number
-  /** 关闭自动保存，只能显式调用 save()。 */
+  /** Turn autosave off; only an explicit save() writes. */
   autoSave?: boolean
 }
 
@@ -33,14 +33,14 @@ export type UseFileResult = {
   loadError: Error | undefined
   saveState: SaveState
   saveError: Error | undefined
-  /** 非空表示服务端文件已被改动，本次保存未生效，需用户决策。 */
+  /** Non-null means the file changed on the server and this save did not land; the user has to decide. */
   staleConflict: StaleConflict | undefined
   setContent: (next: string) => void
-  /** 立即保存（防抖之外）。切换文件、失焦、页面隐藏时使用。 */
+  /** Save now, bypassing the debounce. Used when switching files, on blur, and when the page is hidden. */
   save: () => Promise<void>
-  /** 以服务端内容为准，丢弃本地改动。 */
+  /** Take the server's content and discard the local changes. */
   discardLocal: () => void
-  /** 强制用本地内容覆盖服务端。 */
+  /** Force the local content over whatever the server holds. */
   overwriteRemote: () => Promise<void>
 }
 
@@ -48,11 +48,16 @@ const DEBOUNCE_MS = 800
 const MAX_WAIT_MS = 5000
 
 /**
- * 单个文件的加载与自动保存。
+ * Loading and autosaving a single file.
  *
- * 工作区是唯一真相：编辑最终都落到服务端磁盘，因此换设备、刷新页面、进程重启都能续上。
- * 保存带 etag 乐观锁 —— 服务端文件在编辑期间被改动时（另一个标签页、一次 pull），
- * 写入会被拒绝而不是无声覆盖，冲突通过 staleConflict 交给调用方决策。
+ * The workspace is the single source of truth: every edit ends up on the
+ * server's disk, so switching devices, reloading the page or restarting the
+ * process all pick up where you left off.
+ *
+ * Saves carry an etag optimistic lock. When the file changes on the server
+ * while you are editing - another tab, or a pull - the write is refused rather
+ * than silently overwriting, and the conflict is handed to the caller through
+ * staleConflict.
  */
 export function useFile(path: string, opts: UseFileOptions = {}): UseFileResult {
   const { client, } = useGitkit()
@@ -74,12 +79,14 @@ export function useFile(path: string, opts: UseFileOptions = {}): UseFileResult 
   const [saveError, setSaveError] = useState<Error | undefined>(undefined)
   const [staleConflict, setStale] = useState<StaleConflict | undefined>(undefined)
 
-  // 定时器与「最新值」都用 ref：回调被防抖延后执行，闭包里的 state 会是旧的
+  // Both the timer and the latest value live in refs: a debounced callback runs later, when the state in its closure is stale
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const firstDirtyAt = useRef<number | undefined>(undefined)
-  // 定时器回调被延后执行，闭包里的 state 会是旧的，因此用 ref 保存最新值。
-  // 关键：setContent 里**同步**写入这个 ref，而不是等 render —— 否则防抖极短时
-  // 定时器可能在 React 重渲染之前触发，保存的是上一版内容。
+  // A timer callback runs later, when the state in its closure is stale, so the
+  // latest value is kept in a ref. The important part: setContent writes that
+  // ref **synchronously** rather than waiting for a render - otherwise, with a
+  // very short debounce, the timer can fire before React re-renders and save
+  // the previous version.
   const latest = useRef<{ content: string | undefined; etag: string | undefined; path: string }>({
     content: undefined, etag: undefined, path,
   })
@@ -91,7 +98,7 @@ export function useFile(path: string, opts: UseFileOptions = {}): UseFileResult 
     }
   }
 
-  // ---------------------------------------------------------------- 加载
+  // ---------------------------------------------------------------- loading
 
   useEffect(() => {
     let cancelled = false
@@ -128,8 +135,9 @@ export function useFile(path: string, opts: UseFileOptions = {}): UseFileResult 
 
     return () => {
       cancelled = true
-      // 切换文件前必须落盘：否则用户点另一个文件，未过防抖的改动会被静默丢弃。
-      // 这里用上一次的快照（latest 尚未被新文件覆盖）触发一次保存。
+      // Flush before switching files, or clicking another file would silently
+      // discard changes that had not cleared the debounce yet. This fires one
+      // save from the previous snapshot, while latest still holds the old file.
       if (timer.current !== undefined) {
         clearTimer()
         const snap = latest.current
@@ -145,7 +153,7 @@ export function useFile(path: string, opts: UseFileOptions = {}): UseFileResult 
     }
   }, [client, path])
 
-  // ---------------------------------------------------------------- 保存
+  // ---------------------------------------------------------------- saving
 
   const doSave = useCallback(
     async (force: boolean): Promise<void> => {
@@ -166,7 +174,7 @@ export function useFile(path: string, opts: UseFileOptions = {}): UseFileResult 
         setEtag(r.etag)
         setStale(undefined)
         setSaveState('saved')
-        // 保存改变了工作区状态，改动列表与 diff 需要重新拉取
+        // A save changes the working tree, so the change list and diff have to be refetched
         void qc.invalidateQueries({ queryKey: gitkitKeys.changes(session) })
         void qc.invalidateQueries({ queryKey: gitkitKeys.status(session) })
         void qc.invalidateQueries({ queryKey: gitkitKeys.diff(session) })
@@ -197,7 +205,7 @@ export function useFile(path: string, opts: UseFileOptions = {}): UseFileResult 
       firstDirtyAt.current ??= now
       clearTimer()
 
-      // maxWait：连续输入时也保证按固定间隔落盘，不会一直被防抖推迟
+      // maxWait: keep writing at a fixed interval while typing continues, instead of being pushed back by the debounce forever
       const elapsed = now - firstDirtyAt.current
       const wait = Math.max(0, Math.min(debounceMs, maxWaitMs - elapsed))
       timer.current = setTimeout(() => { void doSave(false) }, wait)
@@ -222,7 +230,7 @@ export function useFile(path: string, opts: UseFileOptions = {}): UseFileResult 
     setSaveState('clean')
   }, [staleConflict])
 
-  // 页面隐藏时用 keepalive 抢救最后一次改动
+  // When the page is hidden, rescue the last change with keepalive
   useEffect(() => {
     if (!autoSave || typeof document === 'undefined') return
     const onHide = (): void => {

@@ -18,8 +18,9 @@ export type SessionConfig = {
   sparsePaths?: SparsePathInput[]
   author: { name: string; email: string }
   retryOnReject?: boolean
-  /** 本次调用者的凭据。不给则退回建 store 时那个（单租户用法）。共享一个 store 的多个
-   *  调用者各自带自己的 token，store 的身份与凭据无关。 */
+  /** This caller's credentials. Omitted, the token the store was built with is
+   *  used, which is the single-tenant case. Callers sharing one store each bring
+   *  their own token; a store's identity has nothing to do with credentials. */
   token?: string
 }
 
@@ -40,11 +41,11 @@ export type RepoStoreDeps = {
 
 export type PublishConfig = SessionConfig & {
   message: string
-  /** 省略则使用 worktree 中当前的改动。 */
+  /** Omitted, whatever is currently changed in the worktree is used. */
   files?: { path: string; content: string }[]
 } & PushOptions
 
-/** 一个 URL 对应的共享对象库。负责 store 级状态（refs、worktree 注册表）。 */
+/** The shared object database for one URL. Owns store-level state: refs and the worktree registry. */
 export class RepoStore {
   readonly #d: RepoStoreDeps
   #active = 0
@@ -60,7 +61,7 @@ export class RepoStore {
   get key(): string { return this.#d.layout.key }
   get url(): string { return this.#d.url }
   get activeSessions(): number { return this.#active }
-  /** 已配置的 forge（GitHub）；未启用时为 undefined。 */
+  /** The configured forge (GitHub); undefined when not enabled. */
   get forge(): ForgeProvider | undefined { return this.#d.forge }
   get idleMs(): number { return Date.now() - this.#lastUsed }
 
@@ -72,16 +73,17 @@ export class RepoStore {
     return this.#d.exec.run(['config', '--get', name], { cwd: this.storeDir })
   }
 
-  /** 仓库默认分支的短名（'main'、'master'、…）。判定不出来时返回 null —— 交给调用方决定
-   *  是退回一个约定值还是报错，本包不猜。 */
+  /** Short name of the repository's default branch ('main', 'master', ...).
+   *  Returns null when it cannot be determined - whether to fall back to a
+   *  convention or fail is the caller's call, not this package's guess. */
   async defaultBranch(): Promise<string | null> {
     const base = await this.#defaultBase()
     if (base === 'HEAD') return null
     return base.replace(/^origin\//, '')
   }
 
-  /** storeDir 自身的 HEAD，游离时为 'HEAD'。它应当始终是游离的 —— 见 RepoManager 中
-   *  clone 之后的 detach。 */
+  /** storeDir's own HEAD, or 'HEAD' when detached. It should always be detached -
+   *  see the detach after clone in RepoManager. */
   async currentHead(): Promise<string> {
     const out = await this.#d.exec.run(['rev-parse', '--abbrev-ref', 'HEAD'], {
       cwd: this.storeDir,
@@ -89,10 +91,11 @@ export class RepoStore {
     return out.trim()
   }
 
-  // ------------------------------------------------------- store 级操作（加锁）
+  // ------------------------------------------------------- store-level operations (locked)
 
-  /** 写 refs 与对象，必须串行。
-   *  opts.token 是「本次调用者」的凭据；不给则退回建 store 时那个（单租户用法）。 */
+  /** Writes refs and objects, so it has to be serialized.
+   *  opts.token is *this caller's* credential; omitted, the token the store was
+   *  built with is used, which is the single-tenant case. */
   async fetch(refspec?: string, opts: { token?: string } = {}): Promise<void> {
     this.#touch()
     const token = opts.token ?? this.#d.token
@@ -119,7 +122,7 @@ export class RepoStore {
     )
   }
 
-  /** 启动清理：回收进程被 kill 后残留的孤儿 worktree。 */
+  /** Startup cleanup: reclaim orphaned worktrees left behind by a killed process. */
   async pruneOrphans(): Promise<string[]> {
     return this.#d.mutex.run(this.key, async () => {
       await this.#d.exec.run(['worktree', 'prune'], { cwd: this.storeDir })
@@ -136,13 +139,13 @@ export class RepoStore {
     })
   }
 
-  // ------------------------------------------------------- session 生命周期
+  // ------------------------------------------------------- session lifecycle
 
   async createSession(cfg: SessionConfig): Promise<GitRepo> {
     const sparse = normalizeSparsePaths(cfg.sparsePaths)
     const mode = cfg.branchMode ?? 'createOrReuse'
     const dir = worktreeDirFor(this.worktreeRoot, `s-${randomBytes(6).toString('hex')}`)
-    // 本次调用者的凭据，贯穿 fetch / worktree / checkout 三个会碰网络的阶段。
+    // This caller's credential, carried through the three network-touching stages: fetch, worktree, checkout.
     const token = cfg.token ?? this.#d.token
 
     await this.fetch(undefined, ...(cfg.token ? [{ token: cfg.token }] as const : []))
@@ -151,26 +154,28 @@ export class RepoStore {
       if ((await this.#checkedOutBranches()).has(cfg.branch)) {
         throw new GitOpError(
           'BRANCH_IN_USE',
-          `分支 ${cfg.branch} 已在另一个 worktree 中 checkout`,
+          `branch ${cfg.branch} is already checked out in another worktree`,
         )
       }
       const existing = await this.#branchExists(cfg.branch)
       if (mode === 'create' && existing !== 'none') {
-        throw new GitOpError('BRANCH_EXISTS', `分支已存在: ${cfg.branch}`)
+        throw new GitOpError('BRANCH_EXISTS', `branch already exists: ${cfg.branch}`)
       }
       if (mode === 'reuse' && existing === 'none') {
-        throw new GitOpError('BRANCH_NOT_FOUND', `分支不存在: ${cfg.branch}`)
+        throw new GitOpError('BRANCH_NOT_FOUND', `no such branch: ${cfg.branch}`)
       }
 
-      // 关键顺序：先建空 worktree，再配 sparse，最后才 checkout。
-      // 若先 checkout，partial clone 会向 promisor remote 批量拉取全部 blob。
+      // The order matters: create an empty worktree, configure sparse, and only
+      // then check out. Checking out first would make the partial clone fetch
+      // every blob from the promisor remote.
       const addArgs = ['worktree', 'add', '--no-checkout']
       if (existing === 'local') {
         addArgs.push(dir, cfg.branch)
       } else {
-        // --no-track：建立跟踪关系会往共享 .git/config 写 branch.<name>.*，
-        // 是又一处共享可变状态。本包所有操作都显式指定 refspec 与
-        // origin/<branch>，不依赖 upstream 跟踪。
+        // --no-track: setting up tracking writes branch.<name>.* into the shared
+        // .git/config, which is one more piece of shared mutable state. Every
+        // operation here names its refspec and origin/<branch> explicitly and
+        // does not rely on upstream tracking.
         const base = existing === 'remote'
           ? `origin/${cfg.branch}`
           : cfg.base ?? (await this.#defaultBase())
@@ -193,9 +198,10 @@ export class RepoStore {
       await this.#d.exec.run(['checkout'], {
         cwd: created, ...(token ? { token } : {}), phase: 'checkout',
       })
-      // 必须用 --worktree：不带该选项会写共享的 .git/config，并发创建 session
-      // 时会争抢 config.lock，而且所有 session 会共用同一个 author。
-      // extensions.worktreeConfig 已在 store 创建时开启。
+      // --worktree is required: without it this writes the shared .git/config,
+      // so concurrent session creation fights over config.lock and every session
+      // ends up with the same author. extensions.worktreeConfig was enabled when
+      // the store was created.
       await this.#d.exec.run(['config', '--worktree', 'user.name', cfg.author.name], {
         cwd: created,
       })
@@ -211,15 +217,18 @@ export class RepoStore {
   }
 
   /**
-   * 在一个自动释放的 session 中执行回调。
+   * Run a callback in a session that releases itself.
    *
-   * 退出契约：回调正常返回或抛错都会 remove worktree；**但如果退出时
-   * worktree 仍处于 merge 中，则保留 worktree 并抛 MERGE_IN_PROGRESS**
-   * （detail 带路径）。静默删除会丢掉冲突现场和宿主已解了一半的工作，
-   * 静默保留又会让宿主以为已清理干净 —— 报错是唯一诚实的选择。
+   * The exit contract: the worktree is removed whether the callback returns or
+   * throws - **except that if the worktree is still mid-merge on exit, it is
+   * kept and MERGE_IN_PROGRESS is thrown** with the path in detail. Deleting
+   * silently would discard the conflict state and any half-finished resolution;
+   * keeping it silently would let the host believe everything was cleaned up.
+   * Failing loudly is the only honest option.
    *
-   * 因此程序化解冲突应当发生在回调内部；需要让冲突现场跨越调用边界存活时，
-   * 改用 createSession + 手动 dispose，或事后 attachSession 接管。
+   * So programmatic conflict resolution belongs inside the callback. When the
+   * conflict state has to outlive the call, use createSession with an explicit
+   * dispose, or take the worktree over afterwards with attachSession.
    */
   async withSession<T>(cfg: SessionConfig, fn: (repo: GitRepo) => Promise<T>): Promise<T> {
     const repo = await this.createSession(cfg)
@@ -246,25 +255,27 @@ export class RepoStore {
       await repo.dispose().catch(() => undefined)
       return
     }
-    // 保留 worktree，但解除持有关系，否则 store 的引用计数永远降不回来
+    // Keep the worktree but drop the claim on it, or the store's refcount never comes back down
     await repo.dispose({ keepWorktree: true }).catch(() => undefined)
-    // 回调本身已经抛错时不再覆盖原始错误
+    // Do not mask the original error when the callback itself already threw
     if (pending) return
     throw new GitOpError(
       'MERGE_IN_PROGRESS',
-      `session 退出时仍处于 merge 中，worktree 已保留: ${repo.dir}。` +
-        `请用 store.attachSession('${repo.dir}') 接管，或 abortMerge() 后 dispose()。`,
+      `the session exited mid-merge, so the worktree was kept: ${repo.dir}. ` +
+        `Take it over with store.attachSession('${repo.dir}'), or abortMerge() and dispose().`,
       { detail: repo.dir },
     )
   }
 
   /**
-   * 一站式：开 session → 写文件 → commit → push（可建 PR）→ 释放。
+   * One call for the whole thing: open a session, write files, commit, push
+   * (optionally opening a PR), release.
    *
-   * 与 withSession 的区别：push 产生冲突时**不抛错**，而是原样返回
-   * `reason: 'conflict'` 的结果并**保留 worktree**（路径在结果的
-   * worktreeDir 中），因为冲突是 PushResult 的一等公民而非异常。
-   * 其余情况一律释放 worktree。
+   * How it differs from withSession: a push that conflicts **does not throw**.
+   * It returns the `reason: 'conflict'` result as-is and **keeps the worktree**,
+   * whose path is in the result's worktreeDir, because a conflict is a
+   * first-class part of PushResult rather than an exception. Every other outcome
+   * releases the worktree.
    */
   async publish(cfg: PublishConfig): Promise<PushResult> {
     const { message, files, createPR, merge, method, retryOnReject, ...sessionCfg } = cfg
@@ -284,7 +295,7 @@ export class RepoStore {
       throw e
     }
     if (!result.ok && result.reason === 'conflict') {
-      // 保留 worktree（冲突现场），但释放持有关系
+      // Keep the worktree with the conflict state, but release the claim on it
       await repo.dispose({ keepWorktree: true }).catch(() => undefined)
       return result
     }
@@ -292,16 +303,16 @@ export class RepoStore {
     return result
   }
 
-  /** 重新接管一个已存在的 worktree（例如进程重启后恢复冲突现场）。 */
+  /** Take over an existing worktree again, e.g. to recover conflict state after a restart. */
   async attachSession(worktreeDir: string): Promise<GitRepo> {
     if (!existsSync(worktreeDir)) {
-      throw new GitOpError('INVALID_ARGUMENT', `worktree 不存在: ${worktreeDir}`)
+      throw new GitOpError('INVALID_ARGUMENT', `no such worktree: ${worktreeDir}`)
     }
     const registered = await this.#listRegisteredWorktrees()
     if (!registered.includes(worktreeDir)) {
       throw new GitOpError(
         'INVALID_ARGUMENT',
-        `${worktreeDir} 不是本 store（${this.key}）注册的 worktree`,
+        `${worktreeDir} is not a worktree registered with this store (${this.key})`,
       )
     }
     const branch = await this.#d.exec.run(['rev-parse', '--abbrev-ref', 'HEAD'], {
@@ -348,7 +359,7 @@ export class RepoStore {
     return infos
   }
 
-  // ------------------------------------------------------- 内部
+  // ------------------------------------------------------- internals
 
   #wrap(
     dir: string,

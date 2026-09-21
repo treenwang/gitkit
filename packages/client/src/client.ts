@@ -21,32 +21,32 @@ export class GitkitClientError extends Error {
     if (wire.current !== undefined) this.current = wire.current
   }
 
-  /** 服务端文件已被改动，本次写入未生效。调用方应呈现「覆盖 / 查看差异 / 放弃」。 */
+  /** The file changed on the server, so this write did not land. Offer the caller overwrite, view the difference, or discard. */
   get isStale(): boolean {
     return this.code === 'STALE_ETAG'
   }
 
-  /** session 已销毁，UI 应引导用户重新开始，而不是重试。 */
+  /** The session is gone. The UI should start the user over rather than retry. */
   get isGone(): boolean {
     return this.code === 'WORKTREE_DISPOSED' || this.code === 'SESSION_NOT_FOUND'
   }
 }
 
 export type ClientConfig = {
-  /** handler 的挂载地址，例如 '/api/admin/skills/git'。 */
+  /** Where the handler is mounted, e.g. '/api/admin/skills/git'. */
   baseUrl: string
-  /** 当前 session。可用 withSession 派生出绑定不同 session 的 client。 */
+  /** The current session. withSession derives a client bound to a different one. */
   sessionId?: string
-  /** 附加请求头（鉴权等）。可以是函数以支持每次请求刷新。 */
+  /** Extra request headers, for authentication and the like. A function lets them be refreshed per request. */
   headers?: Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>)
-  /** 默认 'include'，使宿主的 cookie 会话生效。 */
+  /** Defaults to 'include', so the host's cookie session applies. */
   credentials?: RequestCredentials
   fetch?: typeof globalThis.fetch
 }
 
 export type CallOptions = {
   signal?: AbortSignal
-  /** 页面隐藏时的最后一次保存用得上。 */
+  /** Useful for the last save when the page is being hidden. */
   keepalive?: boolean
 }
 
@@ -61,7 +61,7 @@ export class GitkitClient {
     return this.#cfg.sessionId
   }
 
-  /** 派生一个绑定到指定 session 的新 client；配置共享，互不影响。 */
+  /** Derive a client bound to another session. Configuration is shared; the two do not affect each other. */
   withSession(sessionId: string): GitkitClient {
     return new GitkitClient({ ...this.#cfg, sessionId })
   }
@@ -75,7 +75,7 @@ export class GitkitClient {
     if (!sessionId) {
       throw new GitkitClientError(0, {
         code: 'INVALID_ARGUMENT',
-        message: 'client 未绑定 sessionId；请用 withSession(id) 派生',
+        message: 'this client has no sessionId; derive one with withSession(id)',
       })
     }
 
@@ -96,10 +96,10 @@ export class GitkitClient {
     try {
       res = await doFetch(`${this.#cfg.baseUrl.replace(/\/$/, '')}/${op}`, init)
     } catch (cause) {
-      // 网络层失败（离线、CORS、被中止）没有 HTTP 状态码
+      // A network-level failure (offline, CORS, aborted) has no HTTP status code
       throw new GitkitClientError(0, {
         code: (cause as Error)?.name === 'AbortError' ? 'TIMEOUT' : 'NETWORK',
-        message: (cause as Error)?.message ?? '请求失败',
+        message: (cause as Error)?.message ?? 'the request failed',
       })
     }
 

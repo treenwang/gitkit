@@ -1,124 +1,171 @@
-# @aaxis/git-operation — 设计文档
+# @treenwang/git-operation — design document
 
-**日期**：2026-08-29
-**状态**：设计已确认，待评审后进入实现计划
-
----
-
-## 1. 目标与场景
-
-提供一个可嵌入其他 Node 应用的 npm 包，用于在**远程服务器**上对 Git 仓库做程序化操作，核心能力：
-
-1. 配置一个 Git 仓库的基础属性，可选指定 0 个或多个 folder path；指定后**只 checkout 这些目录**，其余代码不落盘。
-2. 提供 git 基础操作：clone / pull / commit / push / merge / branch / log / diff。
-3. 提供**程序化冲突解决 API**：merge 冲突以结构化数据返回，由宿主 app 决定如何解决。
-4. 可选集成 GitHub：创建 PR，并可配置立即合并或等 CI 通过后合并。
-
-### 运行环境假设
-
-- Node.js ≥ 18（开发用 Bun，产物为 Node 兼容的 ESM + CJS）。
-- 宿主机已安装 **`git ≥ 2.32`**（见 §3.3：worktree + sparse-checkout 组合在更早版本有缺陷）。
-- 认证走 **HTTPS Personal Access Token**。
-- **存储：每个进程独占自己的 `root` 目录**（K8s 下即 StatefulSet + ReadWriteOnce PV，或 ephemeral volume）。不支持多个进程共享同一个 `root`。
-- **并发模型**：每个并发任务在自己的 **git worktree** 中工作，各自一个新分支，互不干扰（见 §3.2）。
-- **外部写入**：其他人可能通过其他 git 客户端向同一远端 push，因此 push 被拒与 pull 冲突属于常规路径。
-- 目标分支（如 `main`）通常受保护，**一切改动必须通过 PR**，包永不直接 push 到受保护分支。
-
-### 非目标（明确不做）
-
-- 不支持无 git 二进制的环境（isomorphic-git 无法实现 partial clone / sparse checkout）。
-- **不支持多进程/多 Pod 共享同一个 `root` 目录**，因此不做跨进程文件锁、不做分布式锁。
-- 不支持 SSH 认证（接口预留，第一版不实现）。
-- 不支持 GitLab / Bitbucket（`ForgeProvider` 接口预留，只实现 GitHub）。
-- 不做 `git mergetool` 这类需要交互式 TTY 的外部工具调用。
-- 不做基于"改动了哪些文件"的通用规则引擎（`mergePolicy`）。
-- 不支持 sparse-checkout 的 non-cone 模式（只支持目录前缀，即 cone 模式）。
-- 不做 rename/rename 冲突的自动解决（只识别并上报）。
-- 不支持在两个 worktree 中同时 checkout 同一分支（git 本身禁止；本包的"每任务一新分支"模型不受影响）。
+**Date**: 2026-08-29
+**Status**: design confirmed, pending review before the implementation plan
 
 ---
 
-## 2. 技术选型
+## 1. Goals and scenario
 
-| 决策 | 选择 | 理由 |
+An npm package, embeddable in other Node applications, for operating on Git
+repositories programmatically on a **remote server**. Its core capabilities:
+
+1. Configure the basic properties of a Git repository, optionally naming zero or
+   more folder paths. Once named, **only those directories are checked out** and
+   the rest of the code never reaches disk.
+2. Offer the basic git operations: clone, pull, commit, push, merge, branch,
+   log, diff.
+3. Offer a **programmatic conflict resolution API**: merge conflicts come back
+   as structured data and the host application decides how to resolve them.
+4. Optionally integrate with GitHub: open a pull request, and configure whether
+   to merge immediately or wait for CI.
+
+### Runtime assumptions
+
+- Node.js >= 18; the build output is Node-compatible ESM and CJS.
+- **`git >= 2.32`** installed on the host (see §3.3: the worktree plus
+  sparse-checkout combination is defective in earlier versions).
+- Authentication through an **HTTPS personal access token**.
+- **Storage: each process owns its own `root` directory** - under Kubernetes
+  that is a StatefulSet with a ReadWriteOnce PV, or an ephemeral volume.
+  Several processes sharing one `root` is not supported.
+- **Concurrency model**: every concurrent task works in its own **git
+  worktree** on its own new branch, without interfering (see §3.2).
+- **External writes**: other people may push to the same remote through other
+  git clients, so a rejected push and a conflicting pull are normal paths.
+- The target branch, `main` typically, is usually protected, so **every change
+  has to go through a pull request**. The package never pushes to a protected
+  branch directly.
+
+### Non-goals, stated explicitly
+
+- No support for environments without a git binary - isomorphic-git cannot do
+  partial clone or sparse checkout.
+- **No support for several processes or pods sharing one `root` directory**, so
+  no cross-process file locks and no distributed locks.
+- No SSH authentication; the interface leaves room for it but the first version
+  does not implement it.
+- No GitLab or Bitbucket; the `ForgeProvider` interface leaves room for them,
+  only GitHub is implemented.
+- No calls into external tools that need an interactive TTY, such as
+  `git mergetool`.
+- No general rule engine over "which files changed" (a `mergePolicy`).
+- No non-cone sparse-checkout; directory prefixes only, which is cone mode.
+- No automatic resolution of rename/rename conflicts; they are detected and
+  reported only.
+- No checking out one branch in two worktrees at once - git forbids it, and this
+  package's one-branch-per-task model is unaffected.
+
+---
+
+## 2. Technology choices
+
+| Decision | Choice | Reasoning |
 | --- | --- | --- |
-| Git 实现 | **simple-git**（包装系统 git CLI） | 唯一能做 partial clone + sparse checkout 的可行方案。isomorphic-git 不支持，nodegit 安装与 API 均不可行。 |
-| 并发隔离 | **git worktree**（每任务一个） | 对象库只有一份（省磁盘），HEAD 与索引各自独立（真并发），无需跨进程锁。 |
-| 开发工具 | **Bun**（`bun test`） | 快。源码不使用任何 `Bun.*` API。 |
-| 打包 | **tsup**（ESM + CJS + `.d.ts`） | 宿主可能是 Node / Electron / Next.js。 |
-| GitHub | **`@octokit/rest`**，optional peerDependency | 未安装时核心 git 功能完全可用。 |
+| Git implementation | **simple-git**, wrapping the system git CLI | The only viable way to do partial clone plus sparse checkout. isomorphic-git does not support it; nodegit is unworkable both to install and to use. |
+| Concurrency isolation | **git worktree**, one per task | A single object database, which saves disk, with an independent HEAD and index, which makes it genuinely concurrent, and no cross-process locks. |
+| Development tooling | **npm workspaces** and **Vitest** (`npm test`) | Source and tests use standard Node APIs only and are not tied to any particular runtime. |
+| Bundling | **tsup**: ESM, CJS and `.d.ts` | The host may be Node, Electron or Next.js. |
+| GitHub | **`@octokit/rest`** as an optional peerDependency | Without it, the core git features remain fully available. |
 
 ---
 
-## 3. 并发模型（本设计的核心）
+## 3. The concurrency model, the heart of this design
 
-### 3.1 为什么不能共享工作区
+### 3.1 Why a shared working tree does not work
 
-git 自带的 `index.lock` 只保护**单条命令**。真正的风险是**跨多条命令的逻辑竞态**：
+git's own `index.lock` protects **a single command**. The real risk is a
+**logical race across several commands**:
 
 ```
-任务 A: createBranch('feat/a')  →  writeFile  →  commit
-任务 B:                    checkout('feat/b')  ↑
-                                          A 在这里提交到了 feat/b
+task A: createBranch('feat/a')  →  writeFile  →  commit
+task B:                    checkout('feat/b')  ↑
+                                          A commits onto feat/b here
 ```
 
-`HEAD`、索引、工作区文件是整个目录的共享可变状态。push 流程更长（`push → 被拒 → pull → 解冲突 → commit → 再 push`），中途被切分支会**静默产出错误的提交**，不报错。
+`HEAD`, the index and the working tree files are shared mutable state across the
+whole directory. The push flow is longer still (`push`, rejected, `pull`,
+resolve, `commit`, push again), and having the branch switched underneath it
+**silently produces the wrong commit** without raising anything.
 
-### 3.2 采用的模型：Store + Worktree
+### 3.2 The chosen model: store plus worktree
 
 ```
 {root}/github.com/acme/web/
-  store/                    ← 共享：git clone --filter=blob:none --no-checkout
-    .git/                     对象库、refs、remote 配置。工作区始终为空。
+  store/                    ← shared: git clone --filter=blob:none --no-checkout
+    .git/                     object database, refs, remote config. Working tree always empty.
   wt/
-    task-<id>-1/            ← 任务 1 的 worktree：独立 HEAD、独立索引、独立 sparse 配置
-    task-<id>-2/            ← 任务 2 的 worktree
+    task-<id>-1/            ← task 1's worktree: its own HEAD, index and sparse config
+    task-<id>-2/            ← task 2's worktree
 ```
 
-- **对象库只有一份**，clone 只发生一次，磁盘开销小。
-- 每个 worktree **有自己的 HEAD 和索引**，任务之间零干扰。
-- 每个 worktree **可以有自己的 sparsePaths**（写入 `.git/worktrees/<name>/info/sparse-checkout`）。
-- **partial clone 的 filter 是对象库级属性**，在 store 创建时设置一次，所有 worktree 共享受益。
+- **One object database**, cloned once, so disk cost stays low.
+- Each worktree **has its own HEAD and index**, so tasks never interfere.
+- Each worktree **can have its own sparsePaths**, written to
+  `.git/worktrees/<name>/info/sparse-checkout`.
+- **The partial clone filter is a property of the object database**, set once
+  when the store is created, and every worktree benefits.
 
-**store 必须用 `--no-checkout` 而非 `--bare`。** `git clone --bare` 不会写入 `remote.origin.fetch` refspec，后续 `git fetch` 不会更新 `refs/remotes/origin/*`，需要手工补配置。`--no-checkout` 得到的是配置完整的普通仓库，只是工作区为空，正是所需。
+**The store has to use `--no-checkout`, not `--bare`.** `git clone --bare` does
+not write a `remote.origin.fetch` refspec, so later `git fetch` calls do not
+update `refs/remotes/origin/*` and the configuration has to be patched by hand.
+`--no-checkout` gives a fully configured ordinary repository whose working tree
+happens to be empty, which is exactly what is wanted.
 
-store 创建后立即执行一次：
+Immediately after creating the store:
 
 ```
 git config extensions.worktreeConfig true
 ```
 
-这是 sparse-checkout 配置能落到**各 worktree 专属 config**（而非污染共享 config）的前提。新版 git 会在需要时自动开启，但显式设置可消除版本差异。
+This is the prerequisite for sparse-checkout settings landing in **each
+worktree's own config** rather than polluting the shared one. Recent git
+versions turn it on when needed, but setting it explicitly removes the version
+difference.
 
-### 3.3 版本要求 `git ≥ 2.32`
+### 3.3 The `git >= 2.32` requirement
 
-`git sparse-checkout` 命令自 2.25 引入，但**与 linked worktree 组合时**，早期版本会把 `core.sparseCheckout` 写到共享 config 而非 worktree 专属 config（需要 `extensions.worktreeConfig`），导致一个 worktree 的 sparse 设置污染其他 worktree。
+The `git sparse-checkout` command arrived in 2.25, but **combined with a linked
+worktree**, early versions write `core.sparseCheckout` into the shared config
+rather than the worktree's own (which needs `extensions.worktreeConfig`), so one
+worktree's sparse settings contaminate the others.
 
-**2.32 是保守下限，确切下限需在实现阶段用 CI 版本矩阵实测钉死**（见 §7.4）。preflight 检测到低于下限直接抛 `GIT_VERSION_TOO_OLD`。
+**2.32 is a conservative floor; the exact floor has to be pinned down during
+implementation with a CI version matrix** (see §7.4). Preflight throws
+`GIT_VERSION_TOO_OLD` for anything below it.
 
-### 3.4 仍然需要串行化的两件事（仅进程内）
+### 3.4 The two things that still need serializing, in-process only
 
-worktree 之间共享对象库与 refs，因此以下 store 级操作需要**进程内 mutex（按 store 路径分键）**：
+Worktrees share an object database and refs, so these store-level operations
+need an **in-process mutex keyed by store path**:
 
-1. **`git fetch`** —— 写 refs 与对象。并发 fetch 可能因 ref lock 争用而失败。
-2. **`git worktree add` / `remove` / `prune`** —— 写 `.git/worktrees/`。
+1. **`git fetch`** - writes refs and objects. Concurrent fetches can fail on ref
+   lock contention.
+2. **`git worktree add` / `remove` / `prune`** - writes `.git/worktrees/`.
 
-**除此之外一律无锁。** worktree 内部的 `writeFile` / `commit` / `resolveConflicts` / `push` 全部可并发。
+**Everything else is unlocked.** `writeFile`, `commit`, `resolveConflicts` and
+`push` inside a worktree are all safe to run concurrently.
 
-**`pull` 必须拆成两段**，否则会违反"`GitRepo` 永不加锁"的约束（§4 硬性约束 3）：
+**`pull` has to be split in two**, or it would violate the "`GitRepo` never
+locks" constraint (§4, hard constraint 3):
 
 ```
-repo.pull()  ≡  store.fetch()            ← store 级，走 StoreMutex
-              + repo.mergeFetchHead()    ← worktree 级，无锁
+repo.pull()  ≡  store.fetch()            ← store level, through StoreMutex
+              + repo.mergeFetchHead()    ← worktree level, unlocked
 ```
 
-`push` **不需要**本地锁：它写的是远端 refs，不触碰本地对象库的共享可变状态；远端侧的竞态由 non-fast-forward 拒绝机制处理（§5.5）。
+`push` needs **no** local lock: it writes remote refs and never touches shared
+mutable state in the local object database, and races on the remote side are
+handled by the non-fast-forward rejection mechanism (§5.5).
 
-因为假设了单进程独占 `root`（§1），进程内 mutex 就足够，**不需要文件锁，也不需要 Redis/DB 分布式锁**。
+Because a single process owns `root` by assumption (§1), an in-process mutex is
+enough. **No file locks and no Redis or database distributed locks.**
 
-### 3.5 worktree 的创建顺序（关键）
+### 3.5 The worktree creation order, which matters
 
-**必须先建空 worktree、再配 sparse、最后才 checkout。** 顺序错了会让"只下载指定目录"这个核心需求直接失效：
+**Create the empty worktree first, configure sparse second, check out last.**
+Getting the order wrong defeats the central requirement of downloading only the
+named directories:
 
 ```
 git worktree add --no-checkout -b <branch> <path> <base>
@@ -127,146 +174,175 @@ git -C <path> sparse-checkout set <paths...>
 git -C <path> checkout
 ```
 
-**原因**：`git worktree add` 默认会 checkout 完整工作树。在 partial clone（`--filter=blob:none`）中，这会触发 git 向 promisor remote **批量惰性拉取整个仓库的 blob** —— 既慢又把不该下载的代码全下下来了。`--no-checkout` 建立空 worktree，配好 sparse 之后再 checkout，才只拉取所需目录的 blob。
+**Why**: `git worktree add` checks out the full working tree by default. Under a
+partial clone (`--filter=blob:none`) that makes git **lazily fetch every blob in
+the repository** from the promisor remote - slow, and it downloads exactly the
+code that was supposed to stay away. `--no-checkout` creates an empty worktree;
+checking out after sparse is configured fetches only the blobs the named
+directories need.
 
-`sparsePaths` 为空（全量模式）时跳过中间两步，直接 `checkout`。
+With `sparsePaths` empty (full mode), skip the two middle steps and check out
+directly.
 
-### 3.6 worktree 生命周期
-- **释放**：`session.dispose()` → `git worktree remove --force <path>`。
-- **提供 `withSession()` 保证释放**（见 §4.3），避免宿主忘记 dispose 造成磁盘泄漏。
-- **崩溃残留**：进程被 kill 会留下孤儿 worktree 目录。`RepoManager` 启动时对每个 store 跑一次 `git worktree prune`，并按前缀清理 `wt/` 下无主目录。**这属于启动清理，不是运行时自动清理**（运行时的 merge 残留仍不自动处理，见 §6.3）。
+### 3.6 Worktree lifecycle
+
+- **Release**: `session.dispose()` runs `git worktree remove --force <path>`.
+- **`withSession()` guarantees the release** (see §4.3), so a host that forgets
+  to dispose does not leak disk.
+- **Crash residue**: a killed process leaves orphaned worktree directories.
+  `RepoManager` runs `git worktree prune` once per store at startup and clears
+  unowned directories under `wt/` by prefix. **This is startup cleanup, not
+  runtime cleanup** - leftover merge state at runtime is still never handled
+  automatically (see §6.3).
 
 ---
 
-## 4. 架构
+## 4. Architecture
 
-依赖方向**严格单向向下**。Layer 2 不得 import Layer 3；Layer 1 不得 import Layer 2。
+Dependencies point **strictly downward**. Layer 2 may not import Layer 3;
+Layer 1 may not import Layer 2.
 
 ```
-Layer 3 · API 层（对外唯一出口）
-  RepoManager      store 生命周期、clone 去重、preflight、启动清理
-  RepoStore        一个 URL 对应的共享对象库；创建 / 回收 worktree session
-  GitRepo          绑定到单个 worktree 的门面，所有 git 操作方法
-  GitHubProvider   ForgeProvider 的 GitHub 实现
+Layer 3 · API (the only way out)
+  RepoManager      store lifecycle, clone dedup, preflight, startup cleanup
+  RepoStore        the shared object database for one URL; creates and reclaims worktree sessions
+  GitRepo          the facade bound to a single worktree, holding every git operation
+  GitHubProvider   the GitHub implementation of ForgeProvider
 
-Layer 2 · 领域层（纯逻辑，不碰 IO，可纯单测）
-  ConflictParser   stage 表 + 冲突标记 → Conflict[]
-  ConflictWriter   Resolution[] / HunkChoice[] → 文件内容
-  MergeSession     merge 状态机（状态从磁盘实时推导）
-  SparseManager    sparsePaths 规范化、cone 校验、requireChecks
-  PushPolicy       push 重试决策 + merge 模式推导
-  PathGuard        路径必须在 sparse 范围内、防目录穿越
-  ErrorMapper      git stderr → 结构化错误码
-  LayoutPlanner    url → store / worktree 目录路径（纯字符串计算）
+Layer 2 · domain (pure logic, no IO, unit-testable on its own)
+  ConflictParser   stage table plus conflict markers to Conflict[]
+  ConflictWriter   Resolution[] / HunkChoice[] to file contents
+  MergeSession     the merge state machine, with state derived from disk on demand
+  SparseManager    sparsePaths normalization, cone validation, requireChecks
+  PushPolicy       push retry decisions and merge mode derivation
+  PathGuard        paths must stay inside the sparse range; guards against traversal
+  ErrorMapper      git stderr to a structured error code
+  LayoutPlanner    url to store and worktree paths (pure string computation)
 
-Layer 1 · 执行层（唯一碰进程与文件的地方）
-  GitExecutor      唯一 spawn git 的地方：认证注入、超时、onProgress、脱敏
-  StoreMutex       按 store 路径分键的进程内 mutex（仅 fetch / worktree 变更）
-  FsGateway        受 PathGuard 约束的 readFile / writeFile / listFiles
+Layer 1 · execution (the only place that touches processes and files)
+  GitExecutor      the only place that spawns git: auth injection, timeouts, onProgress, scrubbing
+  StoreMutex       an in-process mutex keyed by store path, for fetch and worktree changes only
+  FsGateway        readFile / writeFile / listFiles, constrained by PathGuard
 ```
 
-### 目录结构
+### Directory structure
 
 ```
 src/
-  index.ts                    # 只 re-export 公开 API 和类型
+  index.ts                    # re-exports the public API and types, nothing else
   api/        repo-manager.ts  repo-store.ts  git-repo.ts
   forge/      types.ts  github-provider.ts
   domain/     conflict-parser.ts  conflict-writer.ts  merge-session.ts
               sparse-manager.ts  push-policy.ts  path-guard.ts
               error-mapper.ts  layout-planner.ts
   exec/       git-executor.ts  store-mutex.ts  fs-gateway.ts
-  types.ts                    # 公开类型
+  types.ts                    # public types
 ```
 
-### 硬性约束
+### Hard constraints
 
-1. **`GitExecutor` 是唯一 spawn git 的地方。** 别处出现 `spawn` / `exec` 即为 bug。
-2. **Layer 2 全部不碰 IO。** 输入输出均为字符串与普通对象。
-3. **只有 `RepoStore` 可以调用 `StoreMutex`。** `GitRepo` 永远不加锁 —— 若某个 `GitRepo` 方法需要加锁，说明它操作了 store 级状态，应当上移到 `RepoStore`。
-4. **`GitRepo` 不感知 `RepoManager`**，可由测试直接构造在任意 worktree 上。
+1. **`GitExecutor` is the only place that spawns git.** `spawn` or `exec`
+   anywhere else is a bug.
+2. **Nothing in Layer 2 touches IO.** Its inputs and outputs are strings and
+   plain objects.
+3. **Only `RepoStore` may call `StoreMutex`.** `GitRepo` never locks - if a
+   `GitRepo` method needs a lock, it is operating on store-level state and
+   belongs on `RepoStore`.
+4. **`GitRepo` knows nothing of `RepoManager`**, so a test can construct one
+   directly on any worktree.
 
 ---
 
-## 5. 公开 API
+## 5. Public API
 
-### 5.1 配置
+### 5.1 Configuration
 
 ```ts
-type SparsePath = { path: string; requireChecks?: boolean }   // requireChecks 默认 true
+type SparsePath = { path: string; requireChecks?: boolean }   // requireChecks defaults to true
 
 interface ManagerConfig {
-  root: string                             // 本进程独占
-  auth?: { token: string }                 // 全局默认
-  gitPath?: string                         // 默认 'git'
-  timeout?: number                         // 单条命令，默认 120_000 ms
+  root: string                             // owned by this process
+  auth?: { token: string }                 // global default
+  gitPath?: string                         // 'git' by default
+  timeout?: number                         // per command, 120_000 ms by default
   onProgress?: (e: ProgressEvent) => void
 }
 
 interface StoreConfig {
   url: string
-  auth?: { token: string }                 // 覆盖全局
-  depth?: number                           // 默认 undefined（完整历史）
-  filter?: string | false                  // 默认 'blob:none'；false 关闭 partial clone
+  auth?: { token: string }                 // overrides the global one
+  depth?: number                           // undefined by default, meaning full history
+  filter?: string | false                  // 'blob:none' by default; false disables partial clone
 }
 
 interface SessionConfig {
-  branch: string                           // 本任务的分支名
-  branchMode?: 'create' | 'reuse' | 'createOrReuse'   // 默认 'createOrReuse'
-  base?: string                            // 默认远端 HEAD
-  sparsePaths?: (string | SparsePath)[]    // 省略/空 = 全量 checkout
+  branch: string                           // this task's branch name
+  branchMode?: 'create' | 'reuse' | 'createOrReuse'   // 'createOrReuse' by default
+  base?: string                            // the remote HEAD by default
+  sparsePaths?: (string | SparsePath)[]    // omitted or empty means a full checkout
   author: { name: string; email: string }
-  retryOnReject?: boolean                  // push 被拒后自动 pull 并重试一次，默认 true
+  retryOnReject?: boolean                  // after a rejected push, pull and retry once; true by default
 }
 
 type ProgressEvent = {
   phase: 'clone' | 'fetch' | 'pull' | 'push' | 'checkout' | 'worktree'
-  message: string        // 已脱敏的 git stderr 行
+  message: string        // a scrubbed line of git stderr
   percent?: number
 }
 ```
 
-字符串简写 `'docs'` 等价于 `{ path: 'docs', requireChecks: true }`（保守默认）。
+The string shorthand `'docs'` is equivalent to
+`{ path: 'docs', requireChecks: true }`, the conservative default.
 
-`branchMode` 语义：
+`branchMode` semantics:
 
-| 值 | 分支已存在（本地或远端） | 分支不存在 |
+| Value | Branch exists, locally or on the remote | Branch does not exist |
 | --- | --- | --- |
-| `'create'` | 抛 `BRANCH_EXISTS` | 基于 `base` 新建 |
-| `'reuse'` | checkout 并跟踪远端 | 抛 `BRANCH_NOT_FOUND` |
-| `'createOrReuse'`（默认） | checkout 并跟踪远端 | 基于 `base` 新建 |
+| `'create'` | throws `BRANCH_EXISTS` | created from `base` |
+| `'reuse'` | checked out and tracking the remote | throws `BRANCH_NOT_FOUND` |
+| `'createOrReuse'` (default) | checked out and tracking the remote | created from `base` |
 
-任一模式下，若该分支已在**另一个 worktree** 中 checkout，一律抛 `BRANCH_IN_USE`（git 本身禁止）。
+In any mode, if that branch is already checked out in **another worktree**, the
+result is `BRANCH_IN_USE` - git forbids it.
 
-### 5.2 RepoManager / RepoStore
+### 5.2 RepoManager and RepoStore
 
 ```ts
 const manager = new RepoManager({ root: '/data/repos', auth: { token: process.env.GH_TOKEN } })
 
 const store = await manager.store({ url: 'https://github.com/acme/web' })
-// 幂等：不存在则 clone（--filter=blob:none --no-checkout --sparse），存在则复用
+// Idempotent: clones if absent (--filter=blob:none --no-checkout --sparse), reuses if present
 ```
 
-`RepoManager` 职责（**不含任何业务 git 操作**）：
+What `RepoManager` is responsible for - **no business git operations at all**:
 
-1. **目录布局**：委托 `LayoutPlanner`，`https://github.com/acme/web` → `{root}/github.com/acme/web/`。
-2. **clone 去重**：in-flight Promise map，并发首次请求只 clone 一次。
-3. **preflight**：首次使用跑一次 `git --version`（结果缓存），低于 2.32 抛 `GIT_VERSION_TOO_OLD`，未找到抛 `GIT_NOT_FOUND`。
-4. **启动清理**：对每个已存在的 store 跑 `git worktree prune` + 清理 `wt/` 下孤儿目录。
-5. **磁盘回收**：`manager.evict(url)`、`manager.gc({ maxAgeDays, maxTotalBytes })`。
-   **store 需维护活跃 session 引用计数**：`evict` / `gc` 遇到仍有活跃 session 的 store 时跳过并在返回值中报告，绝不删除正在使用的对象库。
+1. **Directory layout**: delegated to `LayoutPlanner`;
+   `https://github.com/acme/web` becomes `{root}/github.com/acme/web/`.
+2. **Clone dedup**: an in-flight Promise map, so concurrent first requests clone
+   exactly once.
+3. **Preflight**: `git --version` once on first use, with the result cached;
+   below 2.32 throws `GIT_VERSION_TOO_OLD`, and a missing binary throws
+   `GIT_NOT_FOUND`.
+4. **Startup cleanup**: `git worktree prune` for every existing store, plus
+   clearing orphaned directories under `wt/`.
+5. **Disk reclamation**: `manager.evict(url)` and
+   `manager.gc({ maxAgeDays, maxTotalBytes })`.
+   **A store has to keep a refcount of active sessions**: `evict` and `gc` skip
+   a store that still has active sessions and report it in their result. An
+   object database in use is never deleted.
 
-### 5.3 主工作流
+### 5.3 The main workflow
 
-目标分支受保护，主线固定为「开 session → 建分支 → 改 → commit → push → 建 PR → 释放 session」：
+The target branch is protected, so the main path is fixed as open a session,
+create a branch, edit, commit, push, open a pull request, release the session:
 
 ```ts
 await store.withSession(sessionConfig, async (repo) => {
-  await repo.writeFile('docs/a.md', content)     // 经 PathGuard，越界抛错
+  await repo.writeFile('docs/a.md', content)     // through PathGuard; out of range throws
   await repo.commit({ message })
   const r = await repo.push({ createPR: { title, body, base: 'main' }, merge: 'auto' })
   if (!r.ok && r.reason === 'conflict') {
-    await repo.resolveConflicts(decide(r.conflicts))   // 在回调内解决
+    await repo.resolveConflicts(decide(r.conflicts))   // resolve inside the callback
     await repo.commit({ message: 'merge' })
     return repo.push({ createPR: false })
   }
@@ -274,40 +350,46 @@ await store.withSession(sessionConfig, async (repo) => {
 })
 ```
 
-**`withSession` 的退出契约（这是本包最容易被误用的地方）：**
+**The `withSession` exit contract, the easiest thing in this package to misuse:**
 
-- 回调正常返回或抛错 → **一律 `worktree remove`**。
-- 但退出时若 worktree **仍处于 merge 中**（有未解冲突或未提交的 merge），**不删除 worktree**，改抛 `MERGE_IN_PROGRESS`，`detail` 中带上 worktree 路径。
-  理由：静默删除等于丢掉冲突现场和宿主已解了一半的工作；而静默保留又会让宿主以为已清理干净。**报错是唯一诚实的选择。**
+- The callback returning or throwing both lead to **`worktree remove`**.
+- Except that if the worktree is **still mid-merge** on exit, with unresolved
+  conflicts or an uncommitted merge, **the worktree is not deleted**;
+  `MERGE_IN_PROGRESS` is thrown instead, with the worktree path in `detail`.
+  The reasoning: deleting silently discards the conflict state and any work the
+  host had half finished, while keeping it silently lets the host believe
+  everything was cleaned up. **Failing loudly is the only honest option.**
 
-因此**程序化解冲突应当发生在回调内部** —— 这也是自然的位置，`push()` 正是在那里返回 `conflicts`。
+So **programmatic conflict resolution belongs inside the callback**, which is
+also its natural home - `push()` returns the `conflicts` right there.
 
-若确实需要让冲突现场跨越调用边界存活（例如交给人工 UI 异步处理），用手动生命周期：
+When the conflict state genuinely has to outlive the call - handed to a human UI
+asynchronously, say - use the manual lifecycle:
 
 ```ts
 const repo = await store.createSession(sessionConfig)
-try { /* ... */ } finally { await repo.dispose() }   // 冲突态下由宿主决定何时 dispose
+try { /* ... */ } finally { await repo.dispose() }   // in a conflict state, the host decides when to dispose
 
-// 进程重启后重新接管一个被保留的 worktree：
+// Take a kept worktree back over after a restart:
 const repo2 = await store.attachSession(worktreePath)
 ```
 
-一站式便利方法：
+A one-call convenience:
 
 ```ts
 await store.publish({
   ...sessionConfig,
   message: string,
-  files?: { path: string; content: string }[],   // 省略则使用 worktree 当前改动
+  files?: { path: string; content: string }[],   // omitted, the worktree's current changes are used
   createPR?: CreatePRInput,
   merge?: MergeMode,
 }): Promise<PushResult>
-// 内部即 withSession + writeFile* + commit + push，全程自动释放 worktree
+// Internally withSession plus writeFile*, commit and push, releasing the worktree throughout
 ```
 
-### 5.4 push 的返回值
+### 5.4 What push returns
 
-**预期结局用返回值表达，不用 throw。**
+**Expected outcomes are return values, not throws.**
 
 ```ts
 type PushResult =
@@ -320,78 +402,90 @@ type PushResult =
   | { ok: false; pushed: false; reason: 'rejected' | 'auth' | 'network'; detail: string }
 ```
 
-**PR 已创建这一事实不受 auto-merge 失败影响** —— auto-merge 失败时仍返回 `ok: true` 与 `pr`，只是 `autoMerge.ok: false`。
+**A failed auto-merge does not change the fact that the pull request exists** -
+the result is still `ok: true` with `pr`, just with `autoMerge.ok: false`.
 
-**返回 `reason: 'conflict'` 时，worktree 停留在 merge 中状态，不会被 `withSession` 自动清理** —— 见 §6.3。
+**When `reason: 'conflict'` comes back, the worktree stays mid-merge and
+`withSession` does not clean it up** - see §6.3.
 
-### 5.5 push 状态机
+### 5.5 The push state machine
 
 ```
-push 分支
- ├─ 成功 ─────────────────► createPR（若配置）─► 按 merge 模式处理 ─► ok:true
- └─ 被拒（non-fast-forward）
-      └─ retryOnReject（默认 true）─► pull（默认 merge 策略）
-            ├─ 无冲突 ─► 再 push 一次
-            │              ├─ 成功 ─► 同上
-            │              └─ 再被拒 ─► ok:false, reason:'rejected'
-            └─ 有冲突 ─► 停在 merge 中 ─► ok:false, reason:'conflict', conflicts
+push the branch
+ ├─ succeeded ─────────────────► createPR, if configured ─► handle the merge mode ─► ok:true
+ └─ rejected (non-fast-forward)
+      └─ retryOnReject, true by default ─► pull, merge strategy by default
+            ├─ no conflict ─► push once more
+            │                    ├─ succeeded ─► as above
+            │                    └─ rejected again ─► ok:false, reason:'rejected'
+            └─ conflict ───► stop mid-merge ─► ok:false, reason:'conflict', conflicts
 ```
 
-**只重试一次。** 不做无限循环——远端持续被他人 push 时会一直转。
+**One retry only.** No infinite loop - a remote that other people keep pushing to
+would spin forever.
 
-### 5.6 merge 模式
+### 5.6 Merge modes
 
 ```ts
-merge: 'auto'        // 按 sparsePaths 的 requireChecks 推导（默认）
-     | 'now'         // 立即合并：PUT /pulls/{n}/merge
-     | 'checksPass'  // GitHub 原生 auto-merge：enablePullRequestAutoMerge
-     | false         // 只建 PR，人工合
+merge: 'auto'        // derived from requireChecks on the sparsePaths (default)
+     | 'now'         // merge immediately: PUT /pulls/{n}/merge
+     | 'checksPass'  // GitHub's native auto-merge: enablePullRequestAutoMerge
+     | false         // open the pull request only and merge by hand
 ```
 
-`'auto'` 的推导规则（**取最保守**）：
+How `'auto'` derives its answer, **taking the most conservative**:
 
 ```
-git diff --name-only <base>...<head>     ← 三点：相对 merge-base
- → 匹配 sparsePaths
- → 任一命中路径 requireChecks: true  ⇒ 'checksPass'
- → 全部 false                        ⇒ 'now'
- → 未配置 sparsePaths（全量模式）    ⇒ 'checksPass'
+git diff --name-only <base>...<head>     ← three dots: relative to the merge base
+ → match against sparsePaths
+ → any matched path with requireChecks: true  ⇒ 'checksPass'
+ → all false                                  ⇒ 'now'
+ → no sparsePaths configured (full mode)      ⇒ 'checksPass'
 ```
 
-这是包内唯一一处"看本次改了什么"的逻辑。
+This is the one place in the package that looks at what actually changed.
 
-**必须用 `--name-only`**：在 partial clone 中，任何需要文件**内容**的 diff（`--stat`、`-p`）都会触发向 promisor remote 惰性拉取 blob。`--name-only` 只读 tree 对象，无额外网络开销。
+**`--name-only` is required**: under a partial clone, any diff that needs file
+**content** (`--stat`, `-p`) triggers lazy blob fetching from the promisor
+remote. `--name-only` reads tree objects only, at no network cost.
 
-`method` 可选 `'squash' | 'merge' | 'rebase'`，默认 `'squash'`。
+`method` is `'squash' | 'merge' | 'rebase'`, `'squash'` by default.
 
-### 5.7 pull / merge 策略
+### 5.7 pull and merge strategy
 
-- `pull` 默认 **merge**（非 rebase），因为一次性冲突比 rebase 的多轮冲突状态机更易程序化处理。
-- 两种均可通过 `pull({ strategy: 'merge' | 'rebase' })` 指定。
+- `pull` defaults to **merge**, not rebase, because one round of conflicts is
+  easier to handle programmatically than rebase's multi-round state machine.
+- Either is available through `pull({ strategy: 'merge' | 'rebase' })`.
 
-### 5.8 冲突 API
+### 5.8 The conflict API
 
 ```ts
 const conflicts = await repo.getConflicts()
 await repo.resolveConflicts([{ path, content }, ...])
 await repo.resolveByHunks(path, ['ours', 'theirs', { content: '...' }])
-await repo.commit({ message })     // 完成 merge commit
+await repo.commit({ message })     // completes the merge commit
 await repo.abortMerge()            // git merge --abort
 ```
 
-### 5.9 其余方法
+### 5.9 The remaining methods
 
-**`RepoStore` 上**（store 级共享状态：refs、对象库）：
+**On `RepoStore`**, for store-level shared state - refs and the object database:
 `fetch(opts?)` `listBranches()` `deleteBranch(name)` `attachSession(path)` `listSessions()`
 
-**`GitRepo` 上**（worktree 级）：
+**On `GitRepo`**, at the worktree level:
 `status()` `pull(opts?)` `merge(ref, opts?)` `log(opts?)` `diffSummary(opts?)`
 `readFile(path)` `writeFile(path, content)` `listFiles(dir?)`
 `setSparsePaths(paths)` `abortMerge()` `dispose()`
 
-**不提供 `checkout()`。** 每个 session 绑定一个分支，切分支等于破坏并发模型 —— 需要另一个分支就开另一个 session。
+**There is no `checkout()`.** A session is bound to one branch, and switching
+branches would break the concurrency model - if you want another branch, open
+another session.
 
-**partial clone 的惰性拉取要写进文档。** `log -p`、`diffSummary` 等需要文件内容的操作会向 promisor remote 请求 blob，产生隐式网络延迟。`log()` 默认 `--name-only`，需要内容时由调用方显式开启并自担开销。
+**A partial clone's lazy fetching has to be documented.** `log -p`,
+`diffSummary` and anything else that needs file content will request blobs from
+the promisor remote, with implicit network latency. `log()` defaults to
+`--name-only`; a caller who wants content turns it on explicitly and accepts the
+cost.
 
 ### 5.10 ForgeProvider
 
@@ -405,39 +499,43 @@ interface ForgeProvider {
 }
 ```
 
-`GitHubProvider` 支持 `baseUrl` 以兼容 GitHub Enterprise。token 默认复用 git 的 token，可单独覆盖。
-`@octokit/rest` 未安装时，调用 PR 相关方法抛 `FORGE_NOT_INSTALLED`，核心 git 功能不受影响。
+`GitHubProvider` accepts a `baseUrl` for GitHub Enterprise. Its token reuses
+git's by default and can be overridden separately.
+When `@octokit/rest` is absent, the pull request methods throw
+`FORGE_NOT_INSTALLED` and the core git features are unaffected.
 
 ---
 
-## 6. 冲突模型
+## 6. The conflict model
 
-**核心认知：不是所有冲突都有 `<<<<<<<` 标记。** 只有双方都修改了同一文本文件才有。其余类型必须靠 `git ls-files -u` 的 stage 位判定。
+**The key realization: not every conflict has `<<<<<<<` markers.** Only a text
+file both sides modified does. Every other kind has to be identified from the
+stage bits of `git ls-files -u`.
 
 ```
-stage 1 = base（共同祖先）   stage 2 = ours   stage 3 = theirs
+stage 1 = base (the common ancestor)   stage 2 = ours   stage 3 = theirs
 ```
 
-| stage 1 | 2 | 3 | type | 工作区表现 |
+| stage 1 | 2 | 3 | type | In the working tree |
 | --- | --- | --- | --- | --- |
-| ✓ | ✓ | ✓ | `both_modified` | 有冲突标记（文本时） |
-| ✓ | ✓ | ✗ | `deleted_by_them` | 保留 ours 完整内容，**无标记** |
-| ✓ | ✗ | ✓ | `deleted_by_us` | 保留 theirs 完整内容，**无标记** |
-| ✗ | ✓ | ✓ | `both_added` | 有冲突标记（文本时） |
-| — | — | — | `rename` | 路径不同，需 `-M` 检测 |
+| yes | yes | yes | `both_modified` | markers, for text |
+| yes | yes | no | `deleted_by_them` | our content in full, **no markers** |
+| yes | no | yes | `deleted_by_us` | their content in full, **no markers** |
+| no | yes | yes | `both_added` | markers, for text |
+| — | — | — | `rename` | different paths; needs `-M` to detect |
 
-### 6.1 类型定义
+### 6.1 Type definitions
 
 ```ts
 type Conflict = {
   path: string
   type: 'both_modified' | 'both_added' | 'deleted_by_them' | 'deleted_by_us' | 'rename'
   binary: boolean
-  base?:   { oid: string; content?: string }   // content 仅文本时填充
+  base?:   { oid: string; content?: string }   // content is filled in for text only
   ours?:   { oid: string; content?: string }
   theirs?: { oid: string; content?: string }
-  ourPath?: string; theirPath?: string          // 仅 rename
-  hunks?: ConflictHunk[]                        // 仅 both_modified / both_added 且为文本
+  ourPath?: string; theirPath?: string          // rename only
+  hunks?: ConflictHunk[]                        // both_modified / both_added, and text only
 }
 
 type ConflictHunk = {
@@ -457,52 +555,68 @@ type Resolution =
 type HunkChoice = 'ours' | 'theirs' | 'base' | 'both' | { content: string }
 ```
 
-`'both'` 表示 ours 内容后接 theirs 内容。
+`'both'` means our content followed by theirs.
 
-### 6.2 纯函数
+### 6.2 The pure function
 
 ```ts
 buildResolvedContent(conflict: Conflict, choices: HunkChoice[]): string
 ```
 
-`choices.length` 必须等于 `hunks.length`，否则抛 `INVALID_ARGUMENT`。**不做"省略即 ours"的默认**，避免宿主漏传导致静默丢改动。
+`choices.length` has to equal `hunks.length` or it throws `INVALID_ARGUMENT`.
+There is deliberately **no "omitted means ours" default**, which would let a
+host silently drop a change by forgetting an entry.
 
-### 6.3 实现要点
+### 6.3 Implementation notes
 
-1. **三方内容必须用 `git cat-file blob <oid>` 按 stage 取**，不能读工作区 —— 工作区文件是带标记的混合体。
-2. **统一注入 `-c merge.conflictStyle=diff3`**，否则拿不到 base 段。
-3. **二进制判定**用 `git check-attr` + NUL 字节探测；二进制文件不填 `content`，只给 `oid`。
-4. **`resolveConflicts` 校验完整性**：传入 path 必须都在当前冲突集合内；解完后若仍有未解冲突，返回剩余列表，而不是留给 `commit` 报错。
-5. **`rename` 只识别不自动解**，返回 `ourPath` / `theirPath` 由宿主决策。
+1. **All three sides have to be read per stage with `git cat-file blob <oid>`**,
+   never from the working tree - the file there is a marker-laden mixture.
+2. **Always inject `-c merge.conflictStyle=diff3`**, or the base section is
+   unavailable.
+3. **Binary detection** uses `git check-attr` plus NUL-byte probing; a binary
+   file gets no `content`, only its `oid`.
+4. **`resolveConflicts` validates completeness**: every path passed in has to be
+   in the current conflict set, and if conflicts remain afterwards it returns
+   the list rather than leaving `commit` to complain.
+5. **`rename` is detected but never resolved**; `ourPath` and `theirPath` hand
+   the decision to the host.
 
-### 6.4 MergeSession 状态机
+### 6.4 The MergeSession state machine
 
 ```
 IDLE ──pull/merge──► CLEAN ──► IDLE
   │                     │
-  └──────────────► CONFLICTED ──resolveConflicts(全解完)──► RESOLVED ──commit──► IDLE
+  └──────────────► CONFLICTED ──resolveConflicts, all resolved──► RESOLVED ──commit──► IDLE
                         │
                         └──abortMerge──► IDLE
 ```
 
-**状态不存内存**，每次实时推导：`git rev-parse --git-path MERGE_HEAD` 指向的文件是否存在 + `git ls-files -u` 是否为空。
+**The state is not kept in memory**; it is derived every time from whether the
+file `git rev-parse --git-path MERGE_HEAD` points at exists, and whether
+`git ls-files -u` is empty.
 
-**必须用 `git rev-parse --git-path`**，不得硬编码 `.git/worktrees/<name>/…` —— linked worktree 的 git 目录布局不应由本包假设。进程可能重启，内存状态必然与磁盘不一致。
+**`git rev-parse --git-path` is required**; `.git/worktrees/<name>/...` must
+never be hard-coded - this package should not assume the git directory layout of
+a linked worktree. The process may restart, at which point in-memory state is
+guaranteed to disagree with disk.
 
 ---
 
-## 7. 错误处理与安全
+## 7. Error handling and security
 
-### 7.1 两类错误
+### 7.1 Two kinds of error
 
-- **预期结局 → 返回值**：push 被拒、有冲突、PR 被保护规则挡住、分支已存在。
-- **真异常 → throw**：git 未安装 / 版本过低、目录非 git 仓库、认证失败、网络不通、磁盘满、超时、参数非法。
+- **Expected outcomes become return values**: a rejected push, a conflict, a
+  pull request blocked by protection rules, a branch that already exists.
+- **Genuine failures throw**: git missing or too old, a directory that is not a
+  git repository, an authentication failure, no network, a full disk, a timeout,
+  invalid arguments.
 
 ```ts
 class GitOpError extends Error {
   code: GitErrorCode
-  detail: string        // git 原始 stderr（已脱敏）
-  command?: string      // 执行的命令（已脱敏）
+  detail: string        // git's raw stderr, scrubbed
+  command?: string      // the command that ran, scrubbed
   cause?: unknown
 }
 
@@ -510,205 +624,284 @@ type GitErrorCode =
   | 'GIT_NOT_FOUND' | 'GIT_VERSION_TOO_OLD'
   | 'AUTH_FAILED' | 'NETWORK' | 'TIMEOUT'
   | 'NOT_A_REPO' | 'DIRTY_WORKTREE' | 'MERGE_IN_PROGRESS'
-  | 'BRANCH_IN_USE'                       // 该分支已在另一 worktree 中 checkout
-  | 'BRANCH_EXISTS' | 'BRANCH_NOT_FOUND'  // branchMode 约束未满足
-  | 'WORKTREE_DISPOSED'                   // 对已释放的 session 调方法
+  | 'BRANCH_IN_USE'                       // already checked out in another worktree
+  | 'BRANCH_EXISTS' | 'BRANCH_NOT_FOUND'  // the branchMode constraint was not met
+  | 'WORKTREE_DISPOSED'                   // a method called on a released session
   | 'PATH_OUTSIDE_SPARSE' | 'PATH_TRAVERSAL'
   | 'INVALID_ARGUMENT'
   | 'FORGE_NOT_INSTALLED' | 'FORGE_API_ERROR'
   | 'UNKNOWN'
 ```
 
-`ErrorMapper` 用 stderr 正则表映射。**映射不中即 `UNKNOWN` + 原始 stderr，绝不猜测** —— 错误的错误码比没有更有害。
+`ErrorMapper` maps stderr through a table of regular expressions. **Anything
+unmatched is `UNKNOWN` plus the raw stderr, never a guess** - a wrong error code
+is worse than none.
 
-### 7.2 认证安全（硬性要求）
+### 7.2 Authentication security, non-negotiable
 
-1. **token 绝不写入 URL**（会落入 `.git/config` 与 reflog）。改用单次进程注入：
+1. **The token is never written into the URL**, where it would land in
+   `.git/config` and the reflog. It is injected per process instead:
    ```
    git -c http.extraheader="AUTHORIZATION: basic <base64(x-access-token:TOKEN)>" ...
    ```
-2. **token 绝不出现在日志、错误信息、`command` 字段中。** `GitExecutor` 在返回任何 stderr / command 前统一脱敏为 `***`。**必须有专门单测。**
-3. **`onProgress` 的 stderr 同样脱敏**后再向外抛。
-4. **包内不读环境变量**，token 由宿主通过配置传入。
+2. **The token never appears in logs, error messages or the `command` field.**
+   `GitExecutor` scrubs it to `***` before returning any stderr or command.
+   **This needs a dedicated unit test.**
+3. **stderr reaching `onProgress` is scrubbed too** before it goes out.
+4. **The package reads no environment variables**; the host passes the token in
+   through configuration.
 
-### 7.3 中断与恢复
+### 7.3 Interruption and recovery
 
-- **启动清理**（`RepoManager` 构造后首次使用 store 时）：`git worktree prune` + 清理 `wt/` 下的孤儿目录。这是安全的，因为孤儿 worktree 的持有进程已经不存在。
-- **运行时不自动清理 merge 残留。** 见 §5.3 的退出契约：`withSession` 退出时若仍在 merge 中，保留 worktree 并抛 `MERGE_IN_PROGRESS`（`detail` 带路径），由宿主用 `store.attachSession(path)` 接管，或显式 `abortMerge()` + `dispose()`。
-  自动 `merge --abort` 可能丢掉已解了一半的冲突，绝不自动执行。
-- **`store.listSessions()`** 报告所有存活 worktree 及其状态（`clean` / `conflicted` / `orphaned`），供宿主与 `gc()` 决策。
-- **`dispose()` 幂等**；对已 dispose 的 session 调用任何方法抛 `WORKTREE_DISPOSED`。
-
----
-
-## 8. 测试策略
-
-比例大致 **70 / 25 / 5**。
-
-### 8.1 纯单测（无 IO）— Layer 2
-
-- **ConflictParser**：覆盖每一种 stage 组合（both_modified / both_added / deleted_by_them / deleted_by_us / binary / rename）。边界：文件末尾无换行、CRLF、内容本身含 `<<<<<<<` 的伪标记、连续多个 hunk。
-- **buildResolvedContent**：每种 `HunkChoice` × 多 hunk 组合，逐字节断言；`choices` 长度不匹配必须抛。
-- **PushPolicy**：`'auto'` 推导三种情形；重试决策（被拒→pull 无冲突→重试；再被拒→不再重试）。
-- **PathGuard**：`../` 穿越、绝对路径、符号链接、超出 sparse 范围、大小写差异。
-- **LayoutPlanner**：各种 URL 形态 → 目录路径；含特殊字符、大小写、带 `.git` 后缀。
-- **ErrorMapper**：真实 stderr 样本 → 错误码，含"映射不中返回 UNKNOWN"用例。
-- **脱敏**：含 token 的 command / stderr，断言输出中搜不到 token。
-
-**样本必须从真 git 导出**（写脚本造各类冲突并 dump 输出），不得手写臆造 —— 手写样本会导致测试全绿而生产全崩。
-
-### 8.2 集成测试（真 git，本地 bare 仓库作 remote，不联网）
-
-```
-建 bare remote → manager.store()（sparse partial clone）
- → withSession(建分支) → 改文件 → commit → push
-另起一个 clone 模拟他人先 push → 本地 push 被拒 → 验证自动 pull + 重试
-两边改同一行 → 验证冲突解析 → resolve → commit → push 成功
-```
-
-必测项：
-
-- sparse checkout 后 **worktree 中其他目录确实不存在**。
-- **两个 worktree 配置不同 sparsePaths，互不污染**（这是 §3.3 版本要求的直接验证）。
-- partial clone 确实未拉取全部 blob，且 filter 对所有 worktree 生效。
-- `setSparsePaths` 增量生效。
-- **并发测试**：同一 store 上并发开 10 个 session，各自建分支、改文件、commit、push，全部成功且互不干扰。这是本设计的核心主张，必须有。
-- **同分支冲突**：两个 session 用同一分支名 → 抛 `BRANCH_IN_USE`。
-- **worktree 泄漏**：session 抛错后 `withSession` 仍完成 remove；冲突态下**不** remove 且抛 `MERGE_IN_PROGRESS`。
-- **`attachSession`**：对保留下来的冲突态 worktree 重新接管，`getConflicts()` 结果与中断前一致。
-- **`branchMode`** 三种取值 × 分支存在/不存在 共 6 种组合。
-- **创建顺序**：断言 worktree 创建过程中**未**发生全量 blob 拉取（用带 `--filter` 的 remote + `GIT_TRACE_PACKET` 或对象计数验证）。
-- **`gc` 引用计数**：有活跃 session 的 store 不被回收。
-- **启动清理**：手工造孤儿 worktree 目录 → 验证被 prune。
-- `dispose()` 幂等；已 dispose 后调方法抛 `WORKTREE_DISPOSED`。
-
-### 8.3 GitHub 层（全部 mock，不打真 API）
-
-`nock` 或注入 fake octokit。覆盖：createPR 成功；`merge: 'now'` 成功与 405 被保护规则挡；`checksPass` 的 GraphQL 调用；**PR 建成但 auto-merge 失败时仍返回 `ok: true` + `autoMerge.ok: false`**。
-
-可选：`E2E_GITHUB_TOKEN` 存在时才跑的真实冒烟测试，CI 默认跳过。
-
-### 8.4 CI 矩阵
-
-Node 18 / 20 / 22 × git **2.32（声明下限）/ 2.37 / 最新**。
-
-**git 版本矩阵是必需的**：sparse-checkout 与 worktree 组合的行为随版本变化，§3.3 的 2.32 是保守估计，需用矩阵实测出真实下限并回填到 preflight 与本文档。
-
-### 8.5 TDD 顺序
-
-先写 `ConflictParser` 的测试样本，再写实现。冲突模型不应期望一次设计正确，靠真实仓库导出的样本逼出遗漏的类型。
+- **Startup cleanup**, on first use of a store after `RepoManager` is
+  constructed: `git worktree prune` plus clearing orphaned directories under
+  `wt/`. This is safe, because the process that held an orphaned worktree no
+  longer exists.
+- **Leftover merge state is never cleaned up at runtime.** See the exit contract
+  in §5.3: a `withSession` that exits mid-merge keeps the worktree and throws
+  `MERGE_IN_PROGRESS` with the path in `detail`, leaving the host to take it
+  over with `store.attachSession(path)` or to `abortMerge()` and `dispose()`
+  explicitly.
+  An automatic `merge --abort` could discard a half-finished resolution and is
+  never performed.
+- **`store.listSessions()`** reports every live worktree and its state -
+  `clean`, `conflicted` or `orphaned` - for the host and `gc()` to act on.
+- **`dispose()` is idempotent**; any method called on a disposed session throws
+  `WORKTREE_DISPOSED`.
 
 ---
 
-## 9. 已识别的风险
+## 8. Test strategy
 
-| 风险 | 影响 | 缓解 |
+Roughly **70 / 25 / 5**.
+
+### 8.1 Pure unit tests, no IO - Layer 2
+
+- **ConflictParser**: every stage combination (both_modified, both_added,
+  deleted_by_them, deleted_by_us, binary, rename). Edge cases: no trailing
+  newline, CRLF, content that itself contains a fake `<<<<<<<`, several
+  consecutive hunks.
+- **buildResolvedContent**: every `HunkChoice` across multi-hunk combinations,
+  asserted byte for byte; a mismatched `choices` length has to throw.
+- **PushPolicy**: the three `'auto'` cases; the retry decision (rejected, pull
+  without conflict, retry; rejected again, no further retry).
+- **PathGuard**: `../` traversal, absolute paths, symlinks, outside the sparse
+  range, case differences.
+- **LayoutPlanner**: various URL shapes to directory paths, including special
+  characters, case, and a `.git` suffix.
+- **Scrubbing**: a command and stderr containing a token, asserting the token
+  cannot be found in the output.
+- **ErrorMapper**: real stderr samples to error codes, including the
+  "unmatched returns UNKNOWN" case.
+
+**The samples have to be exported from real git** - write a script that
+manufactures each kind of conflict and dumps the output. Hand-invented samples
+make the tests pass while production breaks.
+
+### 8.2 Integration tests, against real git with a local bare repo as the remote, offline
+
+```
+create a bare remote → manager.store() (sparse partial clone)
+ → withSession(create a branch) → edit → commit → push
+another clone pushes first → the local push is rejected → verify the automatic pull and retry
+both sides change the same line → verify conflict parsing → resolve → commit → push succeeds
+```
+
+Required coverage:
+
+- After a sparse checkout, **the other directories really are absent from the
+  worktree**.
+- **Two worktrees with different sparsePaths do not contaminate each other** -
+  the direct verification of the version requirement in §3.3.
+- The partial clone really did not fetch every blob, and the filter applies to
+  every worktree.
+- `setSparsePaths` takes effect incrementally.
+- **Concurrency**: ten sessions on one store, each creating a branch, editing,
+  committing and pushing, all succeeding without interfering. This is the
+  central claim of the design and has to be tested.
+- **Branch collision**: two sessions with the same branch name throw
+  `BRANCH_IN_USE`.
+- **Worktree leaks**: `withSession` still removes after the session throws; in a
+  conflict state it does **not** remove and throws `MERGE_IN_PROGRESS`.
+- **`attachSession`**: taking a kept, conflicted worktree back over gives a
+  `getConflicts()` result identical to the one before the interruption.
+- **`branchMode`**: three values against branch present or absent, six
+  combinations.
+- **Creation order**: assert that **no** full blob fetch happened while the
+  worktree was created, using a remote with `--filter` plus `GIT_TRACE_PACKET`
+  or an object count.
+- **`gc` refcounting**: a store with active sessions is not reclaimed.
+- **Startup cleanup**: manufacture an orphaned worktree directory and verify it
+  is pruned.
+- `dispose()` is idempotent; a method called after dispose throws
+  `WORKTREE_DISPOSED`.
+
+### 8.3 The GitHub layer, entirely mocked, never hitting the real API
+
+`nock` or an injected fake octokit. Coverage: createPR succeeding; `merge: 'now'`
+succeeding and being blocked by protection rules with 405; the GraphQL call for
+`checksPass`; **a pull request that opened while auto-merge failed still
+returning `ok: true` with `autoMerge.ok: false`**.
+
+Optionally, a real smoke test that only runs when `E2E_GITHUB_TOKEN` is present,
+skipped by default in CI.
+
+### 8.4 The CI matrix
+
+Node 18 / 20 / 22 against git **2.32 (the declared floor) / 2.37 / latest**.
+
+**The git version matrix is necessary**: the behaviour of sparse-checkout
+combined with worktrees changes between versions, the 2.32 in §3.3 is an
+estimate, and the matrix has to establish the real floor and feed it back into
+preflight and this document.
+
+### 8.5 TDD order
+
+Write the `ConflictParser` samples before the implementation. The conflict model
+should not be expected to come out right first time; samples exported from a
+real repository are what force the missing types out into the open.
+
+---
+
+## 9. Identified risks
+
+| Risk | Impact | Mitigation |
 | --- | --- | --- |
-| 冲突类型覆盖不全（delete/modify、rename、binary） | 解冲突产出错误内容 | 样本从真 git 导出；TDD；rename 只识别不自动解 |
-| worktree + sparse-checkout 的 git 版本下限不确定 | 低版本上 sparse 配置跨 worktree 污染 | CI 版本矩阵实测下限；preflight 硬性拦截 |
-| worktree 泄漏（进程 kill / 冲突态滞留） | 磁盘增长 | `withSession` 保证释放；启动 `worktree prune`；`gc()` 按时间/容量回收 |
-| 多进程共享同一 `root` | 并发损坏对象库 | 设计上明确不支持；部署要求 StatefulSet + RWO PV。如未来必须共享，需引入外部锁并重新评估 git-on-NFS 风险 |
-| partial clone 惰性拉取 blob | `log -p` / `diffSummary` 产生隐式网络延迟甚至大量下载 | 默认 `--name-only`；`merge:'auto'` 的 diff 强制 `--name-only`；文档明示 |
-| worktree 创建顺序写错 | 全量拉取 blob，"只下载指定目录"失效 | §3.5 固定顺序；集成测试断言对象数量 |
-| token 泄露到日志或 `.git/config` | 安全事故 | 只用 `-c http.extraheader` 注入；统一脱敏 + 专项单测 |
-| 冲突态 worktree 长期滞留 | 占磁盘、语义不清 | 不自动清理（避免丢改动），但 `gc()` 需能报告这类 worktree 供宿主处置 |
+| Incomplete conflict-type coverage (delete/modify, rename, binary) | Resolution produces the wrong content | Samples exported from real git; TDD; renames detected but not resolved |
+| The git version floor for worktree plus sparse-checkout is uncertain | On older versions, sparse settings contaminate other worktrees | A CI version matrix establishes the floor; preflight blocks hard |
+| Worktree leaks, from a killed process or a lingering conflict state | Disk growth | `withSession` guarantees release; `worktree prune` at startup; `gc()` reclaims by age and size |
+| Several processes sharing one `root` | Concurrent corruption of the object database | Explicitly unsupported by design; deployment requires a StatefulSet with an RWO PV. If sharing ever becomes mandatory, an external lock is needed and the git-on-NFS risk has to be reassessed |
+| A partial clone fetching blobs lazily | `log -p` and `diffSummary` incur implicit network latency, or large downloads | `--name-only` by default; the diff behind `merge: 'auto'` forces `--name-only`; documented explicitly |
+| Getting the worktree creation order wrong | Every blob is fetched and "download only the named directories" stops working | The fixed order in §3.5; an integration test asserting the object count |
+| A token leaking into logs or `.git/config` | A security incident | Injected only through `-c http.extraheader`; uniform scrubbing plus a dedicated unit test |
+| A conflicted worktree lingering indefinitely | Disk usage, unclear semantics | Never cleaned up automatically, so no change is lost, but `gc()` has to report such worktrees for the host to act on |
 
 ---
 
-## 附录 A：实现记录（2026-08-29）
+## Appendix A: implementation record (2026-08-29)
 
-本节记录实现过程中相对上文设计的**实际偏离**与**新发现**。上文保留原设计以便对照；
-以本节为准。
+This section records where the implementation **actually departed** from the
+design above, and what it **discovered**. The text above is left as originally
+written for comparison; this section takes precedence.
 
-### A.1 技术选型偏离
+### A.1 Departures in technology choices
 
-| 项 | 设计 | 实际 | 原因 |
+| Item | Designed | Actual | Why |
 | --- | --- | --- | --- |
-| git 进程层 | simple-git | `node:child_process.execFile` | simple-git 的 `timeout` 是**无输出超时**而非总时长超时，无法实现 §5.1 要求的单条命令总超时；且在 `GitExecutor` 这套设计下参数传递、并发队列、进度解析、错误映射全部自理，simple-git 只会被当作 `.raw()` 透传使用，价值接近于零。 |
-| TypeScript 版本 | 5.x | **锁定 `^5.9.3`** | 依赖解析一度把 `typescript` 升到 7.0.2，导致 tsup 的 rollup-plugin-dts 崩溃（`useCaseSensitiveFileNames`）。回到 5.9.3 后 `dts: true` 正常，并能同时产出 CJS 需要的 `.d.cts`，因此**未**偏离原设计的打包方案。消费者绝大多数在 TS 5.x，不应让本包的 devDependency 漂到刚发布的大版本。 |
+| The git process layer | simple-git | `node:child_process.execFile` | simple-git's `timeout` is an **idle** timeout rather than a total one, and cannot implement the per-command total timeout §5.1 requires. Under this `GitExecutor` design, argument passing, the concurrency queue, progress parsing and error mapping are all handled here anyway, so simple-git would only ever be used as a `.raw()` pass-through - close to zero value. |
+| TypeScript version | 5.x | **pinned to `^5.9.3`** | Dependency resolution once pulled `typescript` up to 7.0.2, which crashed tsup's rollup-plugin-dts (`useCaseSensitiveFileNames`). Back on 5.9.3, `dts: true` works and also emits the `.d.cts` that CJS needs, so the original bundling plan did **not** change. The overwhelming majority of consumers are on TS 5.x, and this package's devDependency should not drift onto a freshly released major. |
 
-### A.2 实现中发现的缺陷（设计未覆盖）
+### A.2 Defects found during implementation, not covered by the design
 
-1. **rebase 冲突没有 `MERGE_HEAD`。**
-   原设计的 merge 状态判定只看 `MERGE_HEAD`，会把停在 rebase 冲突中的 worktree 误判为
-   干净，`withSession` 随即将其删除，丢失冲突现场。
-   → 新增 `operationInProgress(): 'merge' | 'rebase' | 'cherry-pick' | null`，同时检查
-   `MERGE_HEAD`、`rebase-merge` / `rebase-apply` 目录与 `CHERRY_PICK_HEAD`。
+1. **A rebase conflict has no `MERGE_HEAD`.**
+   The designed merge-state check looked only at `MERGE_HEAD`, so a worktree
+   stopped at a rebase conflict was reported as clean and `withSession` deleted
+   it, losing the conflict state.
+   → Added `operationInProgress(): 'merge' | 'rebase' | 'cherry-pick' | null`,
+   which also checks `MERGE_HEAD`, the `rebase-merge` and `rebase-apply`
+   directories, and `CHERRY_PICK_HEAD`.
 
-2. **rebase 中 `git commit` 会静默出错。**
-   它"成功"提交，但把 rebase 卡在未完成状态与游离 HEAD 上。
-   → `commit()` 在 rebase 进行中直接抛 `INVALID_ARGUMENT` 并指向新增的
-   `continueRebase()`；`abortMerge()` 按当前操作分派到 `merge/rebase/cherry-pick --abort`。
+2. **`git commit` during a rebase fails silently.**
+   It "succeeds", while leaving the rebase unfinished and HEAD detached.
+   → `commit()` now throws `INVALID_ARGUMENT` during a rebase and points at the
+   new `continueRebase()`; `abortMerge()` dispatches to
+   `merge/rebase/cherry-pick --abort` based on the current operation.
 
-3. **rebase 期间 git 的 stage 2/3 语义是反的。**
-   stage 2 是被 rebase 到的上游，stage 3 才是正在重放的提交。原样透传会让宿主
-   `take: 'ours'` 拿到对方的内容 —— 这是会静默产出错误结果的一类缺陷。
-   → 统一归一化：`ours` 永远表示**当前分支的改动**，发生交换时置
-   `Conflict.sidesSwapped = true`（`raw` 保持 git 原始顺序），`resolveByHunks` 在套用前
-   把 choices 换回去。`deleted_by_them` / `deleted_by_us` 同样对调。
+3. **git's stage 2/3 semantics are reversed during a rebase.**
+   Stage 2 is the upstream being rebased onto and stage 3 the commit being
+   replayed. Passing that through unchanged hands a host that asked for
+   `take: 'ours'` the other side's content - the kind of defect that silently
+   produces wrong results.
+   → Normalized: `ours` always means **the change on the current branch**, with
+   `Conflict.sidesSwapped = true` when a swap happened (`raw` keeps git's
+   original order), and `resolveByHunks` swaps the choices back before applying
+   them. `deleted_by_them` and `deleted_by_us` swap too.
 
-4. **session 的 author 写进了共享 `.git/config`。**
-   并发创建 20 个 session 时争抢 `config.lock`（间歇性失败），且所有 session 共用同一个
-   身份。
-   → 改用 `git config --worktree`（`extensions.worktreeConfig` 正为此而设）。
+4. **A session's author was written into the shared `.git/config`.**
+   Creating twenty sessions concurrently fought over `config.lock`, failing
+   intermittently, and every session shared one identity.
+   → Switched to `git config --worktree`, which is exactly what
+   `extensions.worktreeConfig` is for.
 
-5. **CRLF 文件的冲突标记解析失败。**
-   `=======\r` 不匹配 `/^=======$/`，导致整个冲突块解析崩溃。
-   → 标记检测前统一去掉行尾 `\r`；内容行保留原样以保证写回字节一致。
+5. **Conflict marker parsing failed on CRLF files.**
+   `=======\r` does not match `/^=======$/`, which crashed the parse of the
+   whole hunk.
+   → A trailing `\r` is stripped before markers are matched; content lines keep
+   theirs so a write-back is byte-identical.
 
-6. **共享 `.git/config` 的写入不止一处。**
-   除 A.2.4 的 author 外，`git push --set-upstream` 与
-   `git worktree add -b <branch> <dir> origin/x` 建立的跟踪关系都会写
-   `branch.<name>.*` 到共享 config —— 同一类竞态与污染。
-   → push 去掉 `--set-upstream`，worktree 创建加 `--no-track`。本包所有操作都显式
-   指定 refspec 与 `origin/<branch>`，不依赖 upstream 跟踪。
-   现在 session 的创建与 push 全程**不写任何共享 config**。
+6. **The shared `.git/config` was written from more than one place.**
+   Besides the author in A.2.4, `git push --set-upstream` and the tracking set
+   up by `git worktree add -b <branch> <dir> origin/x` both write
+   `branch.<name>.*` into the shared config - the same race and the same
+   contamination.
+   → push dropped `--set-upstream` and worktree creation gained `--no-track`.
+   Every operation in this package names its refspec and `origin/<branch>`
+   explicitly and does not rely on upstream tracking.
+   Session creation and push now write **no shared config at all**.
 
-7. **同一 URL 用不同配置重复 `store()` 会静默沿用第一次的配置**，
-   例如第二次才传 `github` 却拿到没有 forge 的 store。
-   → 比对配置签名，不一致时抛 `INVALID_ARGUMENT`（store 是共享对象库，
-   同一 URL 只能有一份）。
+7. **Calling `store()` again for one URL with a different configuration
+   silently reused the first one** - asking for `github` on the second call, for
+   instance, still returned a store with no forge.
+   → The configuration signature is compared and a mismatch throws
+   `INVALID_ARGUMENT`; a store is a shared object database and a URL may only
+   have one.
 
-8. **`SessionConfig.retryOnReject` 未被传递给 `GitRepo`**，session 级配置静默失效。
-   → 已修复并补回归测试。
+8. **`SessionConfig.retryOnReject` was never passed to `GitRepo`**, so the
+   session-level setting silently did nothing.
+   → Fixed, with a regression test.
 
-9. **`publish` 无法返回冲突。**
-   原设计让它走 `withSession`，而 `withSession` 在冲突时抛 `MERGE_IN_PROGRESS`，
-   把 `PushResult` 的 conflict 分支吞掉。
-   → `publish` 自行管理 session：冲突时**返回**结果并保留 worktree，其余情况释放。
-   `PushResult` 的 conflict 分支新增 `worktreeDir` 字段供 `attachSession` 接管。
-   → 新增 `dispose({ keepWorktree })`，让保留 worktree 的同时能释放 store 引用计数
-   （否则 `activeSessions` 永远降不回来，`gc` 会被永久阻塞）。
+9. **`publish` could not return a conflict.**
+   The design routed it through `withSession`, which throws
+   `MERGE_IN_PROGRESS` on a conflict and swallowed the `PushResult` conflict
+   branch.
+   → `publish` manages its own session: on a conflict it **returns** the result
+   and keeps the worktree; everything else releases.
+   The conflict branch of `PushResult` gained a `worktreeDir` field for
+   `attachSession` to take over.
+   → Added `dispose({ keepWorktree })`, so the worktree can be kept while the
+   store's refcount is released - otherwise `activeSessions` never comes back
+   down and `gc` is blocked forever.
 
-### A.3 git 行为确认
+### A.3 Confirmed git behaviour
 
-- **cone 模式的 sparse-checkout 总是包含仓库根目录的文件**（如 `README.md`）。
-  这是 git 的固有行为，无法关闭。本包的 `PathGuard` 仍拒绝对根文件的写入，
-  使实际可写范围严格等于声明的 `sparsePaths`。
-- **rename/rename 冲突在索引中是三条各只有一个 stage 的记录**
-  （base 在旧路径、ours 在我方新路径、theirs 在对方新路径），而非同一路径上的多 stage。
-  归组依赖 `git diff --name-status -M`；映射缺失时退化为按单条上报，不抛错阻塞。
+- **Cone-mode sparse checkout always includes the files at the repository
+  root**, `README.md` among them. This is git's own behaviour and cannot be
+  turned off. `PathGuard` still refuses writes to those files, so the writable
+  range is strictly equal to the declared `sparsePaths`.
+- **A rename/rename conflict appears in the index as three entries that each
+  carry one stage** - base at the old path, ours at our new path, theirs at
+  theirs - rather than several stages on one path.
+  Grouping relies on `git diff --name-status -M`; without a mapping it degrades
+  to reporting each entry separately rather than throwing and blocking.
 
-### A.4 API 增补
+### A.4 API additions
 
 `exists()` · `merge(ref, opts)` · `continueRebase()` · `operationInProgress()` ·
-`recover({ abortOperation, clearIndexLock })` · `RepoStore.forge` getter ·
+`recover({ abortOperation, clearIndexLock })` · the `RepoStore.forge` getter ·
 `dispose({ keepWorktree })` · `gc({ maxAgeDays | maxAgeMs })`
 
-`setSparsePaths` 接受 `SparsePathInput[]`（字符串简写与对象混用）而非要求完整的
-`SparsePath[]`。
+`setSparsePaths` accepts `SparsePathInput[]`, mixing the string shorthand with
+objects, rather than requiring full `SparsePath[]`.
 
-### A.5 未实现
+### A.5 Not implemented
 
-- `gc({ maxTotalBytes })` —— 需要递归统计目录体积，当前只按空闲时长回收。
-- SSH 认证、GitLab/Bitbucket：按原设计不在第一版范围内，接口已预留。
+- `gc({ maxTotalBytes })` - it needs a recursive directory size, and reclamation
+  currently goes by idle time only.
+- SSH authentication, GitLab and Bitbucket: out of scope for the first version
+  by design, with the interfaces left in place.
 
-### A.6 验证状态
+### A.6 Verification status
 
-- 产物为 ESM + CJS + `.d.ts` / `.d.cts`，并已用独立的消费方工程验证类型可用、`PushResult` 判别联合可正确收窄。
-- **295 个测试全部通过**（`bun test`），其中集成测试用本地 bare 仓库，不联网。
-  包含 20 个 session 的并发压力测试、五类冲突的真 git 覆盖、二进制字节一致性、
-  以及"创建 sparse worktree 期间不发生全量 blob 拉取"的对象计数断言。
-- 本地实测 git 版本为 **2.50.1**。**声明下限 2.32 尚未在本地验证**，
-  由 CI 矩阵（`.github/workflows/ci.yml`，node 18/20/22 × git 2.32/system）实测钉死；
-  若 2.32 不成立需上调 `MIN_GIT` 并同步本文档。
+- The build output is ESM, CJS, `.d.ts` and `.d.cts`, verified from a separate
+  consumer project: the types are usable and the `PushResult` discriminated
+  union narrows correctly.
+- **295 tests pass** (`npm test`), with the integration tests running against a
+  local bare repository and never going online. They include a concurrency
+  stress test with twenty sessions, real-git coverage of all five conflict
+  kinds, byte-identical binary content, and an object-count assertion that no
+  full blob fetch happens while a sparse worktree is created.
+- The git version tested locally is **2.50.1**. **The declared floor of 2.32 has
+  not been verified locally**; the CI matrix
+  (`.github/workflows/ci.yml`, node 18/20/22 against git 2.32/system) pins it
+  down. If 2.32 does not hold, `MIN_GIT` has to go up and this document has to
+  follow.

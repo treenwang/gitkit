@@ -12,13 +12,13 @@
     "noEmit": true,
     "verbatimModuleSyntax": true,
     "paths": {
-      "@aaxis/gitkit": [
+      "@treenwang/gitkit": [
         "./packages/core/src/index.ts"
       ],
-      "@aaxis/gitkit-client": [
+      "@treenwang/gitkit-client": [
         "./packages/client/src/index.ts"
       ],
-      "@aaxis/gitkit-server": [
+      "@treenwang/gitkit-server": [
         "./packages/server/src/index.ts"
       ]
     }

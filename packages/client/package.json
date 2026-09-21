@@ -1,8 +1,8 @@
 {
-  "name": "@aaxis/gitkit-client",
-  "version": "0.0.0",
-  "description": "Typed browser client for @aaxis/gitkit. Zero runtime dependencies.",
-  "license": "UNLICENSED",
+  "name": "@treenwang/gitkit-client",
+  "version": "0.1.0",
+  "description": "Typed browser client for @treenwang/gitkit. Zero runtime dependencies.",
+  "license": "MIT",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -28,14 +28,18 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@aaxis/gitkit": "workspace:*"
+    "@treenwang/gitkit": "^0.1.0"
   },
   "peerDependenciesMeta": {
-    "@aaxis/gitkit": {
+    "@treenwang/gitkit": {
       "optional": true
     }
   },
   "devDependencies": {
-    "@aaxis/gitkit": "workspace:*"
+    "@treenwang/gitkit": "^0.1.0"
+  },
+  "engines": {},
+  "publishConfig": {
+    "access": "public"
   }
 }

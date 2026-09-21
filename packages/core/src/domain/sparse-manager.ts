@@ -3,18 +3,18 @@ import { GitOpError, type SparsePath, type SparsePathInput } from '../types'
 function validate(raw: string): string {
   const trimmed = raw.trim()
   const p = trimmed.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
-  if (!p) throw new GitOpError('INVALID_ARGUMENT', 'sparse path 不能为空')
+  if (!p) throw new GitOpError('INVALID_ARGUMENT', 'a sparse path cannot be empty')
   if (trimmed.startsWith('/')) {
-    throw new GitOpError('INVALID_ARGUMENT', `sparse path 必须是相对路径: ${raw}`)
+    throw new GitOpError('INVALID_ARGUMENT', `a sparse path must be relative: ${raw}`)
   }
   if (/[*?[\]!]/.test(p)) {
     throw new GitOpError(
       'INVALID_ARGUMENT',
-      `sparse path 不支持通配符（只支持 cone 模式的目录前缀）: ${raw}`,
+      `sparse paths do not support wildcards; only cone-mode directory prefixes: ${raw}`,
     )
   }
   if (p.split('/').some((seg) => seg === '..' || seg === '.' || seg === '')) {
-    throw new GitOpError('INVALID_ARGUMENT', `sparse path 不得包含 . 或 ..: ${raw}`)
+    throw new GitOpError('INVALID_ARGUMENT', `a sparse path must not contain . or ..: ${raw}`)
   }
   return p
 }

@@ -1,10 +1,12 @@
 /**
- * 按 key 分键的进程内串行队列。
+ * An in-process serial queue, keyed.
  *
- * 只用于保护 store 级共享状态：git fetch（写 refs 与对象）与
- * git worktree add/remove（写 .git/worktrees）。worktree 内部的操作一律无锁。
+ * It exists only to protect store-level shared state: git fetch (which writes
+ * refs and objects) and git worktree add/remove (which writes .git/worktrees).
+ * Operations inside a worktree take no lock at all.
  *
- * 本包假设单进程独占 root 目录，因此不需要文件锁或分布式锁。
+ * This package assumes a single process owns the root directory, so no file
+ * lock or distributed lock is needed.
  */
 export class StoreMutex {
   #tails = new Map<string, Promise<unknown>>()
@@ -15,7 +17,7 @@ export class StoreMutex {
 
   run<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.#tails.get(key) ?? Promise.resolve()
-    // 无论前一个任务成功还是失败都继续排队，避免队列卡死
+    // Queue on regardless of whether the previous task succeeded, so one failure cannot wedge the queue
     const result = prev.then(fn, fn)
     const tail: Promise<void> = result.then(
       () => undefined,

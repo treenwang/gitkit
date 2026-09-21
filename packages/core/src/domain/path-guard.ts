@@ -2,10 +2,11 @@ import { posix } from 'node:path'
 import { GitOpError, type SparsePath } from '../types'
 
 /**
- * 校验并解析 worktree 内的相对路径。
+ * Validate and resolve a relative path inside the worktree.
  *
- * 这是纯函数，不解析符号链接（那需要 IO）。FsGateway 在真正访问前会额外
- * 用 realpath 复核，堵住经符号链接逃逸的路径。
+ * This is a pure function and does not resolve symlinks, which would need IO.
+ * FsGateway re-checks with realpath immediately before access, closing the
+ * symlink escape route.
  */
 export function resolveWithin(
   worktreeDir: string,
@@ -13,12 +14,12 @@ export function resolveWithin(
   sparse: readonly SparsePath[],
 ): string {
   if (!relPath || !relPath.trim()) {
-    throw new GitOpError('INVALID_ARGUMENT', '路径不能为空')
+    throw new GitOpError('INVALID_ARGUMENT', 'the path cannot be empty')
   }
 
   const normalizedInput = relPath.replace(/\\/g, '/')
   if (posix.isAbsolute(normalizedInput)) {
-    throw new GitOpError('PATH_TRAVERSAL', `不接受绝对路径: ${relPath}`)
+    throw new GitOpError('PATH_TRAVERSAL', `absolute paths are not accepted: ${relPath}`)
   }
 
   const rel = posix
@@ -27,13 +28,13 @@ export function resolveWithin(
     .replace(/\/+$/, '')
 
   if (rel === '..' || rel.startsWith('../')) {
-    throw new GitOpError('PATH_TRAVERSAL', `路径越出 worktree: ${relPath}`)
+    throw new GitOpError('PATH_TRAVERSAL', `path escapes the worktree: ${relPath}`)
   }
   if (rel === '.' || rel === '') {
-    throw new GitOpError('INVALID_ARGUMENT', `路径不能指向 worktree 根自身: ${relPath}`)
+    throw new GitOpError('INVALID_ARGUMENT', `the path cannot be the worktree root itself: ${relPath}`)
   }
   if (rel === '.git' || rel.startsWith('.git/')) {
-    throw new GitOpError('PATH_TRAVERSAL', `不允许访问 .git 目录: ${relPath}`)
+    throw new GitOpError('PATH_TRAVERSAL', `access to the .git directory is not allowed: ${relPath}`)
   }
 
   if (sparse.length > 0) {
@@ -42,7 +43,7 @@ export function resolveWithin(
       const allowed = sparse.map((s) => s.path).join(', ')
       throw new GitOpError(
         'PATH_OUTSIDE_SPARSE',
-        `路径 ${rel} 不在 sparse 范围内（允许: ${allowed}）`,
+        `path ${rel} is outside the sparse range (allowed: ${allowed})`,
       )
     }
   }

@@ -3,8 +3,9 @@ function escapeRegExp(s: string): string {
 }
 
 /**
- * 从任意文本中抹除 secret。除明文外，还抹除 `x-access-token:<secret>` 的
- * base64 形式 —— 这是 http.extraheader 注入后出现在命令行里的样子。
+ * Scrub secrets out of arbitrary text. Besides the literal value, this also
+ * scrubs the base64 form of `x-access-token:<secret>` - the shape the secret
+ * takes on the command line once http.extraheader has injected it.
  */
 export function redact(text: string, secrets: readonly string[]): string {
   let out = text

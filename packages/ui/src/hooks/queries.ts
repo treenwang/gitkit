@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query'
 import type {
   ChangeEntry, ClientPushResult, FileEntry, OpParams, SessionStatus,
-} from '@aaxis/gitkit-client'
+} from '@treenwang/gitkit-client'
 import { useGitkit } from '../context'
 import { gitkitKeys } from '../keys'
 
@@ -57,7 +57,7 @@ export function useDiff(
   })
 }
 
-/** 提交后工作区状态全变，整个 session 分区一并失效。 */
+/** A commit changes the whole working tree, so the entire session partition is invalidated. */
 function useInvalidateSession(): () => void {
   const qc = useQueryClient()
   const session = useSession()

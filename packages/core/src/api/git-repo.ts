@@ -36,7 +36,7 @@ export type InProgressOperation = 'merge' | 'rebase' | 'cherry-pick' | null
 
 export type StatusResult = {
   branch: string
-  /** 正在进行中的多步操作；无则为 null。 */
+  /** The multi-step operation in progress, or null when there is none. */
   operation: InProgressOperation
   staged: string[]
   modified: string[]
@@ -72,7 +72,7 @@ export type PushOptions = {
   retryOnReject?: boolean
 }
 
-/** 绑定到单个 worktree 的操作门面。永不加锁 —— store 级操作请走 RepoStore。 */
+/** The operation facade bound to a single worktree. Never locks - store-level operations go through RepoStore. */
 export class GitRepo {
   readonly #d: GitRepoDeps
   #fs: FsGateway
@@ -90,17 +90,17 @@ export class GitRepo {
 
   assertLive(): void {
     if (this.#disposed) {
-      throw new GitOpError('WORKTREE_DISPOSED', `session 已释放: ${this.#d.dir}`)
+      throw new GitOpError('WORKTREE_DISPOSED', `session already released: ${this.#d.dir}`)
     }
   }
 
-  /** 在本 worktree 中执行 git；供包内其他模块（冲突层）复用。 */
+  /** Run git inside this worktree; reused by other modules in the package, such as the conflict layer. */
   async git(args: string[], opts: Omit<ExecOptions, 'cwd'> = {}): Promise<string> {
     this.assertLive()
     return this.#d.exec.run(args, { ...opts, cwd: this.#d.dir, token: this.#d.token })
   }
 
-  // ------------------------------------------------------------ 文件
+  // ------------------------------------------------------------ files
 
   async readFile(rel: string): Promise<string> {
     this.assertLive()
@@ -122,23 +122,25 @@ export class GitRepo {
     return this.#fs.exists(rel)
   }
 
-  /** 以 Buffer 读取；用于二进制探测与不可按 UTF-8 解码的内容。 */
+  /** Read as a Buffer; for binary detection and content that is not valid UTF-8. */
   async readBuffer(rel: string): Promise<Buffer> {
     this.assertLive()
     return this.#fs.readBuffer(rel)
   }
 
-  /** 删除工作区文件。commit 时 `git add -A` 会把它记录为删除。 */
+  /** Delete a file in the working tree. `git add -A` at commit time records it as a deletion. */
   async deleteFile(rel: string): Promise<void> {
     this.assertLive()
     await this.#fs.deleteFile(rel)
   }
 
   /**
-   * 当前改动的 diff。
+   * A diff of the current changes.
    *
-   * `paths` 强制经 PathGuard 校验 —— 调用方在物理上无法 diff 声明的 sparse 范围之外的
-   * 内容。这既是安全边界，也把 partial clone 的惰性 blob 拉取限制在已声明的目录内。
+   * `paths` always goes through PathGuard, so a caller physically cannot diff
+   * anything outside the declared sparse range. That is both a security
+   * boundary and a way to keep a partial clone's lazy blob fetching inside the
+   * directories that were declared.
    */
   async getDiff(
     opts: { paths?: string[]; against?: string; context?: number } = {},
@@ -149,7 +151,7 @@ export class GitRepo {
 
     const context = Number(opts.context ?? 3)
     if (!Number.isInteger(context) || context < 0 || context > 1000) {
-      throw new GitOpError('INVALID_ARGUMENT', `context 必须是 0..1000 的整数: ${opts.context}`)
+      throw new GitOpError('INVALID_ARGUMENT', `context must be an integer in 0..1000: ${opts.context}`)
     }
     const args = ['diff', `--unified=${context}`]
     if (opts.against) args.push(`${assertValidRevision(opts.against)}...HEAD`)
@@ -157,8 +159,9 @@ export class GitRepo {
     if (paths.length > 0) args.push(...paths)
 
     const tracked = await this.git(args)
-    // git diff 不显示未跟踪文件，但"新建一个文件"是最常见的改动之一。
-    // 不用 `add --intent-to-add`（读操作不该改索引），改为逐个走 --no-index。
+    // git diff does not show untracked files, yet "I created a file" is one of
+    // the most common changes there is. Rather than `add --intent-to-add` (a
+    // read must not touch the index), run --no-index once per file.
     const untracked = opts.against ? '' : await this.#untrackedPatch(paths, context)
 
     const patch = [tracked, untracked].filter(Boolean).join('\n')
@@ -173,7 +176,7 @@ export class GitRepo {
 
     const parts: string[] = []
     for (const file of listed.split('\n').filter(Boolean)) {
-      // --no-index 在两边不同时以退出码 1 结束，这里是预期结果而非失败
+      // --no-index exits 1 when the two sides differ, which is the expected outcome here, not a failure
       const r = await this.#d.exec.exec(
         ['diff', '--no-index', `--unified=${context}`, '--', '/dev/null', file],
         { cwd: this.#d.dir, allowExitCodes: [1] },
@@ -183,7 +186,7 @@ export class GitRepo {
     return parts.join('\n')
   }
 
-  // ------------------------------------------------------------ 状态
+  // ------------------------------------------------------------ status
 
   async #gitPathExists(name: string): Promise<boolean> {
     const p = await this.git(['rev-parse', '--git-path', name]).catch(() => '')
@@ -192,11 +195,12 @@ export class GitRepo {
   }
 
   /**
-   * 判断是否有进行中的多步操作。
+   * Detect a multi-step operation in progress.
    *
-   * rebase 冲突**不会**产生 MERGE_HEAD —— 只看 MERGE_HEAD 会把还在冲突中的
-   * worktree 误判为干净，从而被 withSession 直接删掉。必须同时检查
-   * rebase-merge / rebase-apply 目录与 CHERRY_PICK_HEAD。
+   * A rebase conflict does **not** produce MERGE_HEAD, so looking only at
+   * MERGE_HEAD would report a still-conflicted worktree as clean and let
+   * withSession delete it. The rebase-merge and rebase-apply directories and
+   * CHERRY_PICK_HEAD have to be checked as well.
    */
   async operationInProgress(): Promise<InProgressOperation> {
     if (await this.#gitPathExists('MERGE_HEAD')) return 'merge'
@@ -247,7 +251,7 @@ export class GitRepo {
     }
   }
 
-  // ------------------------------------------------------------ 操作
+  // ------------------------------------------------------------ operations
 
   async commit(opts: { message: string; paths?: string[] }): Promise<{ sha: string; changed: boolean }> {
     this.assertLive()
@@ -262,8 +266,9 @@ export class GitRepo {
     if (operation === 'rebase') {
       throw new GitOpError(
         'INVALID_ARGUMENT',
-        'rebase 进行中不能用 commit 收尾（git commit 会留下未完成的 rebase 与游离 HEAD）。' +
-          '解完冲突后请调用 continueRebase()，或 abortMerge() 放弃。',
+        'a rebase in progress cannot be concluded with commit (git commit would ' +
+          'leave the rebase unfinished and HEAD detached). Resolve the conflicts and ' +
+          'call continueRebase(), or abortMerge() to give up.',
       )
     }
 
@@ -282,15 +287,15 @@ export class GitRepo {
   }
 
   /**
-   * pull = store 级 fetch（由 RepoStore 持锁）+ worktree 级 merge（无锁）。
-   * 冲突不抛错，返回 conflicted: true。
+   * pull is a store-level fetch, locked by RepoStore, plus a worktree-level
+   * merge, unlocked. Conflicts do not throw; they come back as conflicted: true.
    */
   async pull(
     opts: { strategy?: 'merge' | 'rebase'; ref?: string } = {},
   ): Promise<{ conflicted: boolean }> {
     this.assertLive()
     await this.#d.fetch()
-    // ref 可能来自不可信输入；以 - 开头会被 git 当作选项解析
+    // ref may come from untrusted input, and a leading - would be parsed by git as an option
     const ref = assertValidRevision(opts.ref ?? `origin/${this.#d.branch}`)
     const args = opts.strategy === 'rebase'
       ? ['rebase', ref]
@@ -307,9 +312,10 @@ export class GitRepo {
 
   async pushBranch(opts: { force?: boolean } = {}): Promise<PushBranchResult> {
     this.assertLive()
-    // 不用 --set-upstream：它会写共享的 .git/config（branch.<name>.remote/merge），
-    // 并发 push 时争抢 config.lock。本包所有操作都显式指定 refspec 与
-    // origin/<branch>，不依赖 upstream 跟踪。
+    // No --set-upstream: it writes the shared .git/config
+    // (branch.<name>.remote/merge), so concurrent pushes fight over config.lock.
+    // Every operation here names its refspec and origin/<branch> explicitly and
+    // does not rely on upstream tracking.
     const args = ['push']
     if (opts.force) args.push('--force-with-lease')
     args.push('origin', `${this.#d.branch}:${this.#d.branch}`)
@@ -328,10 +334,13 @@ export class GitRepo {
   }
 
   /**
-   * 完整的 push 流程：推分支 →（被拒则 pull 一次再推）→ 建 PR → 按模式合并。
+   * The whole push flow: push the branch, pull once and retry if it was
+   * rejected, open a PR, merge according to the mode.
    *
-   * 预期结局一律用返回值表达，不抛错：push 被拒、有冲突、PR 被保护规则挡住
-   * 都是常规路径。只有真异常（认证失败之外的 git 崩溃、参数非法）才抛。
+   * Every expected outcome is a return value rather than an exception: a
+   * rejected push, a conflict, a PR blocked by protection rules are all normal
+   * paths. Only genuine failures throw - a git crash other than an auth failure,
+   * or invalid arguments.
    */
   async push(opts: PushOptions = {}): Promise<PushResult> {
     this.assertLive()
@@ -352,7 +361,7 @@ export class GitRepo {
       attempt += 1
       const pulled = await this.pull()
       if (pulled.conflicted) {
-        // 停在 merge 中，把冲突现场交给宿主处理
+        // Stop mid-merge and hand the conflict state to the host
         return {
           ok: false,
           pushed: false,
@@ -369,14 +378,14 @@ export class GitRepo {
     if (!forge) {
       throw new GitOpError(
         'FORGE_NOT_INSTALLED',
-        '要创建 PR 需要在 RepoManager/RepoStore 上配置 forge（GitHubProvider）',
+        'creating a pull request requires a forge (GitHubProvider) configured on RepoManager or RepoStore',
       )
     }
 
     const input = { ...opts.createPR, head: opts.createPR.head ?? this.#d.branch }
     const pr = await forge.createPR(input)
 
-    // 只有 'auto'（或省略）才需要这次 diff；显式指定模式时省掉一次 git 调用
+    // Only 'auto' (or omitted) needs this diff; an explicit mode saves a git call
     const derived = needsDerivation(opts.merge)
       ? deriveMergeMode(await this.diffSummary({ against: input.base }), this.#d.sparse)
       : 'checksPass'
@@ -389,7 +398,7 @@ export class GitRepo {
         ? await forge.mergePR(pr.number, method)
         : await forge.enableAutoMerge(pr.number, method)
 
-    // PR 已创建这一事实不受 auto-merge 结果影响
+    // The PR exists regardless of how auto-merge turned out
     return { ok: true, pushed: true, pr, autoMerge }
   }
 
@@ -404,7 +413,7 @@ export class GitRepo {
     })
   }
 
-  /** 只用 --name-only：partial clone 下需要内容的 diff 会触发惰性拉取 blob。 */
+  /** --name-only only: under a partial clone, a diff that needs content triggers lazy blob fetching. */
   async diffSummary(opts: { against?: string } = {}): Promise<string[]> {
     const target = assertValidRevision(opts.against ?? 'HEAD~1')
     const out = await this.git(['diff', '--name-only', `${target}...HEAD`])
@@ -425,13 +434,13 @@ export class GitRepo {
     this.#fs = new FsGateway(this.#d.dir, this.#d.sparse)
   }
 
-  // ------------------------------------------------------------ 冲突
+  // ------------------------------------------------------------ conflicts
 
   /**
-   * 返回结构化的冲突列表。
+   * Return the conflicts as structured data.
    *
-   * 三方内容一律用 `cat-file blob <oid>` 按 stage 取 —— 工作区里的文件是
-   * 带标记的混合体，既不是 ours 也不是 theirs。
+   * All three sides are read per stage with `cat-file blob <oid>`: the file in
+   * the working tree is a marker-laden mixture that is neither ours nor theirs.
    */
   async getConflicts(): Promise<Conflict[]> {
     this.assertLive()
@@ -450,7 +459,7 @@ export class GitRepo {
   }
 
   async #renameMaps(): Promise<{ ours: Map<string, string>; theirs: Map<string, string> }> {
-    // rebase 期间是 REBASE_HEAD（正在重放的提交），merge 期间是 MERGE_HEAD
+    // REBASE_HEAD during a rebase (the commit being replayed), MERGE_HEAD during a merge
     const otherRef =
       (await this.operationInProgress()) === 'rebase' ? 'REBASE_HEAD' : 'MERGE_HEAD'
     const mergeBase = await this.git(['merge-base', 'HEAD', otherRef]).catch(() => '')
@@ -482,8 +491,8 @@ export class GitRepo {
     ])
     const binary = base.binary || ours.binary || theirs.binary
 
-    // rebase 期间 git 的 stage 2/3 语义与 merge 相反，这里统一归一化，
-    // 使 `ours` 永远是"你这条分支的改动"
+    // During a rebase git's stage 2/3 semantics are the reverse of a merge, so
+    // normalize here and keep `ours` meaning "the change on your branch"
     const oursSide = swapped ? theirs.side : ours.side
     const theirsSide = swapped ? ours.side : theirs.side
     const ourPath = swapped ? plan.theirPath : plan.ourPath
@@ -501,7 +510,7 @@ export class GitRepo {
       ...(swapped ? { sidesSwapped: true } : {}),
     }
 
-    // 只有双方都改了同一个文本文件，工作区里才会有 <<<<<<< 标记
+    // Only when both sides modified the same text file does the working tree carry <<<<<<< markers
     const hasMarkers =
       !binary && (plan.type === 'both_modified' || plan.type === 'both_added')
     if (hasMarkers && plan.worktreePath) {
@@ -517,7 +526,7 @@ export class GitRepo {
     return conflict
   }
 
-  /** 写回解决结果并 `git add`；返回仍未解决的冲突路径。 */
+  /** Write the resolutions back and `git add` them; returns the paths still unresolved. */
   async resolveConflicts(resolutions: readonly Resolution[]): Promise<{ remaining: string[] }> {
     this.assertLive()
     const conflicts = await this.getConflicts()
@@ -528,7 +537,7 @@ export class GitRepo {
       if (!conflict) {
         throw new GitOpError(
           'INVALID_ARGUMENT',
-          `路径不在当前冲突集合中: ${r.path}（当前冲突: ${[...known.keys()].join(', ') || '无'}）`,
+          `path is not in the current conflict set: ${r.path} (conflicts: ${[...known.keys()].join(', ') || 'none'})`,
         )
       }
       await this.#applyResolution(conflict, r)
@@ -542,7 +551,7 @@ export class GitRepo {
     const allPaths = [...new Set(
       [conflict.path, conflict.ourPath, conflict.theirPath].filter(Boolean) as string[],
     )]
-    // 非 rename 冲突只有一个路径；rename 冲突可能同时涉及旧路径与双方新路径
+    // A non-rename conflict has one path; a rename conflict may span the old path and both new ones
     const primary = conflict.ourPath ?? conflict.theirPath ?? conflict.path
 
     if ('content' in r) {
@@ -564,8 +573,8 @@ export class GitRepo {
     if (!side) {
       throw new GitOpError(
         'INVALID_ARGUMENT',
-        `冲突 ${conflict.path} 没有 ${r.take} 侧（type=${conflict.type}）；` +
-          `若要删除该文件请用 take: 'delete'`,
+        `conflict ${conflict.path} has no ${r.take} side (type=${conflict.type}); ` +
+          `use take: 'delete' to remove the file`,
       )
     }
 
@@ -574,7 +583,7 @@ export class GitRepo {
       : r.take === 'theirs' ? (conflict.theirPath ?? conflict.path)
       : conflict.path
 
-    // 统一走 blob → Buffer → 落盘，二进制安全，且不依赖工作区当前内容
+    // Always blob to Buffer to disk: binary-safe, and independent of whatever the working tree currently holds
     const buf = await this.#d.exec.runBuffer(['cat-file', 'blob', side.oid], {
       cwd: this.#d.dir,
     })
@@ -583,38 +592,38 @@ export class GitRepo {
     await this.git(['add', '--', target])
   }
 
-  /** rename 冲突下，选定一侧后要把其余路径从索引与工作区移除。 */
+  /** In a rename conflict, once a side is chosen the other paths have to leave the index and the working tree. */
   async #dropOtherPaths(allPaths: readonly string[], keep: string): Promise<void> {
     const others = allPaths.filter((p) => p !== keep)
     if (others.length === 0) return
     await this.git(['rm', '-f', '--ignore-unmatch', '--', ...others])
   }
 
-  /** 逐 hunk 选边的便利方法。choices 长度必须等于 hunks 数量。 */
+  /** Convenience for choosing a side per hunk. choices must have exactly as many entries as there are hunks. */
   async resolveByHunks(path: string, choices: readonly HunkChoice[]): Promise<{ remaining: string[] }> {
     this.assertLive()
     const conflict = (await this.getConflicts()).find((c) => c.path === path)
     if (!conflict) {
-      throw new GitOpError('INVALID_ARGUMENT', `路径不在当前冲突集合中: ${path}`)
+      throw new GitOpError('INVALID_ARGUMENT', `path is not in the current conflict set: ${path}`)
     }
     if (conflict.raw === undefined) {
       throw new GitOpError(
         'INVALID_ARGUMENT',
-        `冲突 ${path} 没有可逐块解决的文本标记（type=${conflict.type}, binary=${conflict.binary}）`,
+        `conflict ${path} has no text markers to resolve hunk by hunk (type=${conflict.type}, binary=${conflict.binary})`,
       )
     }
-    // raw 中的标记仍是 git 的原始顺序；归一化过的 choices 要换回去再套用
+    // The markers in raw keep git's original order, so normalized choices have to be swapped back before they are applied
     const effective = conflict.sidesSwapped ? choices.map(swapChoice) : choices
     return this.resolveConflicts([
       { path, content: buildResolvedContent(conflict.raw, effective) },
     ])
   }
 
-  /** 继续被冲突中断的 rebase。解完冲突并 add 之后调用。 */
+  /** Continue a rebase interrupted by conflicts. Call it once they are resolved and added. */
   async continueRebase(): Promise<{ done: boolean; conflicted: boolean }> {
     this.assertLive()
     if ((await this.operationInProgress()) !== 'rebase') {
-      throw new GitOpError('INVALID_ARGUMENT', '当前没有进行中的 rebase')
+      throw new GitOpError('INVALID_ARGUMENT', 'no rebase is in progress')
     }
     try {
       await this.git(['-c', 'core.editor=true', 'rebase', '--continue'])
@@ -627,19 +636,19 @@ export class GitRepo {
     return { done: (await this.operationInProgress()) === null, conflicted: false }
   }
 
-  /** 放弃进行中的操作（merge / rebase / cherry-pick），回到干净状态。 */
+  /** Abandon the operation in progress (merge, rebase or cherry-pick) and return to a clean state. */
   async abortMerge(): Promise<void> {
     this.assertLive()
     const op = await this.operationInProgress()
     if (op === null) {
-      throw new GitOpError('INVALID_ARGUMENT', '当前没有进行中的 merge / rebase / cherry-pick')
+      throw new GitOpError('INVALID_ARGUMENT', 'no merge, rebase or cherry-pick is in progress')
     }
     const cmd = op === 'rebase' ? 'rebase' : op === 'cherry-pick' ? 'cherry-pick' : 'merge'
     await this.git([cmd, '--abort'])
   }
 
   /**
-   * 显式合并任意 ref（不含 fetch）。需要先取到远端改动请用 pull 或 store.fetch。
+   * Explicitly merge any ref, without fetching. To pick up remote changes first, use pull or store.fetch.
    */
   async merge(
     ref: string,
@@ -659,8 +668,9 @@ export class GitRepo {
   }
 
   /**
-   * 检查并清理中断遗留的状态。**不会自动执行**，必须由宿主显式调用 ——
-   * 自动 abort 可能丢掉别人已解了一半的冲突。
+   * Inspect and clean up state left behind by an interruption. This never runs
+   * on its own and has to be called explicitly by the host: an automatic abort
+   * could throw away a conflict someone had half resolved.
    */
   async recover(
     opts: { abortOperation?: boolean; clearIndexLock?: boolean } = {},
@@ -687,8 +697,9 @@ export class GitRepo {
   }
 
   /**
-   * 释放 session。默认删除 worktree；`keepWorktree: true` 只解除持有关系
-   * 而保留磁盘上的 worktree（用于把冲突现场留给宿主后续 attachSession 接管）。
+   * Release the session. By default the worktree is deleted;
+   * `keepWorktree: true` only drops the claim and leaves the worktree on disk,
+   * so the host can take the conflict state over later with attachSession.
    */
   async dispose(opts: { keepWorktree?: boolean } = {}): Promise<void> {
     if (this.#disposed) return
@@ -697,7 +708,7 @@ export class GitRepo {
   }
 }
 
-/** rebase 归一化：deleted_by_them 与 deleted_by_us 互换。 */
+/** Rebase normalization: deleted_by_them and deleted_by_us swap places. */
 function swapType(t: Conflict['type']): Conflict['type'] {
   if (t === 'deleted_by_them') return 'deleted_by_us'
   if (t === 'deleted_by_us') return 'deleted_by_them'

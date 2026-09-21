@@ -1,4 +1,4 @@
-/** TanStack Query 的 key 工厂。按 session 分区，session 切换即整体失效。 */
+/** Key factory for TanStack Query. Partitioned by session, so switching sessions invalidates everything at once. */
 export const gitkitKeys = {
   all: (session: string) => ['gitkit', session] as const,
   status: (session: string) => ['gitkit', session, 'status'] as const,

@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { render } from '@testing-library/react'
 import { createElement } from 'react'
-import { GitkitClient } from '@aaxis/gitkit-client'
+import { GitkitClient } from '@treenwang/gitkit-client'
 import { GitkitProvider } from '../src/context'
 
 const client = new GitkitClient({ baseUrl: '/g', sessionId: 's' })
@@ -17,21 +17,21 @@ afterEach(() => {
   document.documentElement.style.setProperty('--background', '0 0% 100%')
 })
 
-describe('开发期主题缺失检测', () => {
-  test('缺少 --background 时给出可操作的警告', () => {
+describe('detecting a missing theme in development', () => {
+  test('warns actionably when --background is missing', () => {
     document.documentElement.style.removeProperty('--background')
     render(createElement(GitkitProvider, { client }, null))
     expect(warnings.join('\n')).toContain('@source')
     expect(warnings.join('\n')).toContain('--background')
   })
 
-  test('主题变量存在时不警告', () => {
+  test('stays quiet when the theme variables are present', () => {
     document.documentElement.style.setProperty('--background', '0 0% 100%')
     render(createElement(GitkitProvider, { client }, null))
     expect(warnings).toEqual([])
   })
 
-  test('生产环境不检测', () => {
+  test('does not check in production', () => {
     const prev = process.env.NODE_ENV
     process.env.NODE_ENV = 'production'
     document.documentElement.style.removeProperty('--background')
