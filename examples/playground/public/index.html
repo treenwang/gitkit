@@ -164,7 +164,7 @@ $('open').onclick = async () => {
     if (!res.ok) throw new Error(`${data.code ?? ''} ${data.message ?? ''}`)
     sessionId = data.sessionId
     client = new GitkitClient({ baseUrl: '/api/gitkit', sessionId })
-    $('meta').textContent = `${data.branch} · checked out ${data.sparsePaths.join(', ')} · base ${data.base}`
+    $('meta').textContent = `${data.branch} · checked out ${data.sparsePaths?.length > 0 ? data.sparsePaths.join(', ') : 'all files (root)'} · base ${data.base}`
     log(`session open: ${data.branch}`, 'ok')
     setBusy(false)
     await listFiles()

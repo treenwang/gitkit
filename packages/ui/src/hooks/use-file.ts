@@ -171,6 +171,7 @@ export function useFile(path: string, opts: UseFileOptions = {}): UseFileResult 
         if (!force && snapshot.etag !== undefined) params.baseEtag = snapshot.etag
 
         const r = await client.call('files.write', params)
+        latest.current.etag = r.etag
         setEtag(r.etag)
         setStale(undefined)
         setSaveState('saved')

@@ -1,6 +1,6 @@
 {
   "name": "@treenwang/gitkit-workspace",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -14,7 +14,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run --workspace @treenwang/gitkit build && npm run --workspace @treenwang/gitkit-client build && npm run --workspace @treenwang/gitkit-server build && npm run --workspace @treenwang/gitkit-ui build",
     "version:bump": "node scripts/bump-version.js",
     "release": "npm publish --workspaces --access public",
     "playground": "npm run build && npm start --workspace @treenwang/gitkit-playground",

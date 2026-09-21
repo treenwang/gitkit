@@ -15,7 +15,7 @@ export function renderUnifiedPatch(patch: string): React.ReactNode {
   const lines = patch.split('\n')
   return createElement(
     'pre',
-    { className: 'overflow-x-auto rounded bg-muted/20 p-2 font-mono text-xs leading-relaxed' },
+    { className: 'overflow-x-auto max-h-[28rem] overflow-y-auto rounded bg-muted/20 p-2 font-mono text-xs leading-relaxed' },
     ...lines.map((line, i) => {
       const kind =
         line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff ') ||
@@ -57,7 +57,7 @@ export function DiffView(props: DiffViewProps): React.ReactElement {
   const body = props.renderDiff ? props.renderDiff(patch) : renderUnifiedPatch(patch)
   return createElement(
     Panel,
-    { className: cx('p-1', props.className) },
+    { className: cx('min-w-0 max-w-full overflow-hidden p-1', props.className) },
     createElement(Fragment, null,
       query.data?.truncated
         ? createElement(Muted, { className: 'px-1 pb-1' }, 'The diff is too large; only the beginning is shown')

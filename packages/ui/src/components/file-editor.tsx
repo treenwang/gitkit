@@ -7,6 +7,7 @@ export type FileEditorRenderProps = {
   onChange: (next: string) => void
   saveState: SaveState
   binary: boolean
+  save: () => Promise<void>
 }
 
 export type FileEditorProps = UseFileOptions & {
@@ -62,6 +63,7 @@ export function FileEditor(props: FileEditorProps): React.ReactElement {
       onChange: f.setContent,
       saveState: f.saveState,
       binary: f.binary,
+      save: f.save,
     }),
   )
 }

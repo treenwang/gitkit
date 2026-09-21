@@ -13,10 +13,31 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import express from 'express'
+import { existsSync, readFileSync } from 'node:fs'
+import { execSync } from 'node:child_process'
 import { RepoManager, GitOpError, type GitRepo, type RepoStore } from '@treenwang/gitkit'
 import { createHandler, toExpress } from '@treenwang/gitkit-server'
 
 const here = dirname(fileURLToPath(import.meta.url))
+
+// Load .env if present
+for (const envPath of [join(here, '.env'), join(here, '../../.env')]) {
+  if (existsSync(envPath)) {
+    for (const line of readFileSync(envPath, 'utf8').split('\n')) {
+      const match = line.match(/^\s*([A-Za-z_0-9]+)\s*=\s*(.*)?\s*$/)
+      if (match) {
+        const key = match[1]!
+        let val = (match[2] ?? '').trim().replace(/\\$/, '').trim()
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+          val = val.slice(1, -1)
+        }
+        if (!process.env[key]) {
+          process.env[key] = val
+        }
+      }
+    }
+  }
+}
 
 // ---------------------------------------------------------------- config
 
@@ -24,8 +45,23 @@ const REPO_URL = process.env.GITKIT_REPO_URL
 const TOKEN = process.env.GITKIT_TOKEN
 const ROOT = process.env.GITKIT_ROOT ?? join(here, '.data')
 const PORT = Number(process.env.PORT ?? 5177)
-// Check out only these directories — this is what sparse checkout buys you.
-const SPARSE_PATHS = (process.env.GITKIT_PATHS ?? 'docs').split(',').map((s) => s.trim()).filter(Boolean)
+
+// Auto kill old process on PORT if occupied
+try {
+  const pids = execSync(`lsof -ti :${PORT}`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] })
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+  for (const pid of pids) {
+    if (Number(pid) !== process.pid) {
+      process.kill(Number(pid), 'SIGKILL')
+    }
+  }
+} catch {}
+// Check out only these directories if specified. If unset or empty, checks out the whole repository.
+const SPARSE_PATHS = process.env.GITKIT_PATHS
+  ? process.env.GITKIT_PATHS.split(',').map((s) => s.trim()).filter(Boolean)
+  : []
 const BASE = process.env.GITKIT_BASE ?? 'main'
 const AUTHOR = {
   name: process.env.GITKIT_AUTHOR_NAME ?? 'gitkit playground',
@@ -146,7 +182,20 @@ function describe(e: unknown) {
 }
 
 const server = createServer(app)
-server.listen(PORT, () => console.log(`gitkit playground -> http://localhost:${PORT}\n`))
+
+function listen(port: number) {
+  server.once('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.warn(`Port ${port} is in use, trying ${port + 1}...`)
+      listen(port + 1)
+    } else {
+      throw err
+    }
+  })
+  server.listen(port, () => console.log(`gitkit playground -> http://localhost:${port}\n`))
+}
+
+listen(PORT)
 
 // Hand the worktrees back on Ctrl-C instead of leaving them behind.
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {

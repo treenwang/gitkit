@@ -111,6 +111,11 @@ export const OPS: {
       const currentBuf = await ctx.repo.readBuffer(path)
       const currentEtag = etagOf(currentBuf)
       if (currentEtag !== params.baseEtag) {
+        // If the server content already matches the target content, this write is idempotent
+        const targetEtag = etagOf(content)
+        if (currentEtag === targetEtag) {
+          return { etag: currentEtag }
+        }
         throw new TransportError('STALE_ETAG', 'the file changed, so this write did not land', {
           current: { content: currentBuf.toString('utf8'), etag: currentEtag },
         })
