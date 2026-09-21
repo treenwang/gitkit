@@ -1,6 +1,6 @@
 {
   "name": "@treenwang/gitkit-server",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "HTTP transport for @treenwang/gitkit. Web-standard handler plus an Express adapter.",
   "license": "MIT",
   "type": "module",
@@ -28,8 +28,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@treenwang/gitkit": "^0.1.1",
-    "@treenwang/gitkit-client": "^0.1.1"
+    "@treenwang/gitkit": "^0.1.2",
+    "@treenwang/gitkit-client": "^0.1.2"
   },
   "engines": {
     "node": ">=18"
