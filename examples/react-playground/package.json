@@ -1,6 +1,6 @@
 {
   "name": "@treenwang/gitkit-react-playground",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Local end-to-end demo of @treenwang/gitkit-ui: React hooks and components against a real repository. Not published.",
   "type": "module",
@@ -9,10 +9,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@treenwang/gitkit": "^0.1.2",
-    "@treenwang/gitkit-client": "^0.1.2",
-    "@treenwang/gitkit-server": "^0.1.2",
-    "@treenwang/gitkit-ui": "^0.1.2",
+    "@treenwang/gitkit": "^0.1.3",
+    "@treenwang/gitkit-client": "^0.1.3",
+    "@treenwang/gitkit-server": "^0.1.3",
+    "@treenwang/gitkit-ui": "^0.1.3",
     "@octokit/rest": "^21.1.1",
     "@tanstack/react-query": "^5.90.21",
     "express": "^5.1.0",

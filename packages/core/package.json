@@ -1,6 +1,6 @@
 {
   "name": "@treenwang/gitkit",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Embeddable server-side git operations with sparse checkout, worktree-isolated concurrency, structured conflict resolution, and optional GitHub PR integration.",
   "license": "MIT",
   "keywords": [
