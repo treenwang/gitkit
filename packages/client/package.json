@@ -1,6 +1,6 @@
 {
   "name": "@treenwang/gitkit-client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Typed browser client for @treenwang/gitkit. Zero runtime dependencies.",
   "license": "MIT",
   "type": "module",
@@ -28,7 +28,7 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@treenwang/gitkit": "^0.1.0"
+    "@treenwang/gitkit": "^0.1.1"
   },
   "peerDependenciesMeta": {
     "@treenwang/gitkit": {
@@ -36,7 +36,7 @@
     }
   },
   "devDependencies": {
-    "@treenwang/gitkit": "^0.1.0"
+    "@treenwang/gitkit": "^0.1.1"
   },
   "engines": {},
   "publishConfig": {
