@@ -20,6 +20,12 @@
       ],
       "@treenwang/gitkit-server": [
         "./packages/server/src/index.ts"
+      ],
+      "@treenwang/gitkit-ui/components": [
+        "./packages/ui/src/components.ts"
+      ],
+      "@treenwang/gitkit-ui/hooks": [
+        "./packages/ui/src/hooks.ts"
       ]
     }
   }
