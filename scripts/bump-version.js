@@ -47,11 +47,11 @@ const internalPackages = [
   '@treenwang/gitkit-ui',
 ]
 
-function updatePackageJson(pkgPath, isRoot = false) {
+function updatePackageJson(pkgPath, { bumpVersion = true } = {}) {
   if (!existsSync(pkgPath)) return
   const content = JSON.parse(readFileSync(pkgPath, 'utf8'))
 
-  content.version = nextVersion
+  if (bumpVersion) content.version = nextVersion
 
   // Update internal dependencies
   for (const depType of ['dependencies', 'devDependencies', 'peerDependencies']) {
@@ -69,7 +69,7 @@ function updatePackageJson(pkgPath, isRoot = false) {
 }
 
 // Update root
-updatePackageJson(join(rootDir, 'package.json'), true)
+updatePackageJson(join(rootDir, 'package.json'))
 
 // Update packages/*
 const packagesDir = join(rootDir, 'packages')
@@ -78,12 +78,13 @@ for (const sub of readdirSync(packagesDir)) {
   updatePackageJson(p)
 }
 
-// Update examples/*
+// Examples are private and never published, so their own version stays put.
+// Their internal dependency ranges still need to track the new version, or the
+// workspace link breaks on any minor/major bump.
 const examplesDir = join(rootDir, 'examples')
 if (existsSync(examplesDir)) {
   for (const sub of readdirSync(examplesDir)) {
-    const p = join(examplesDir, sub, 'package.json')
-    updatePackageJson(p)
+    updatePackageJson(join(examplesDir, sub, 'package.json'), { bumpVersion: false })
   }
 }
 

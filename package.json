@@ -16,7 +16,7 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "build": "npm run --workspace @treenwang/gitkit build && npm run --workspace @treenwang/gitkit-client build && npm run --workspace @treenwang/gitkit-server build && npm run --workspace @treenwang/gitkit-ui build",
     "version:bump": "node scripts/bump-version.js",
-    "release": "npm publish --workspaces --access public",
+    "release": "npm publish --access public -w packages/core -w packages/client -w packages/server -w packages/ui",
     "playground": "npm run build && npm start --workspace @treenwang/gitkit-playground",
     "playground:react": "npm run build && npm start --workspace @treenwang/gitkit-react-playground"
   },
